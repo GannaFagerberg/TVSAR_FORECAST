@@ -36,7 +36,7 @@ using Plots
 include("TVSARUtils.jl")
 export Arima,compute_resid!, compute_residulas!, clamp_partials!,expand_grouped_states_fast!
 export group_vector, group_vector_view,expand_grouped_intercept!
-export compute_conditional_mean!,compute_noise_SARMA
+export compute_conditional_mean!,compute_noise_SARMA,build_Cargs_fast_threaded!
 
 include("ARMAReparam.jl")
 export FindActiveLagsMultiSAR,

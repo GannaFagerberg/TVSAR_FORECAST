@@ -75,6 +75,22 @@ end
 
 
 
+function SetupARReg(x, p)
+    T = length(x)
+
+    # Set up lags
+    y = x[p+1:end]
+    Z = zeros(T, p)
+    for i = 1:p
+        Z[:,i] = [zeros(i); x[1:(end-i)]]
+    end
+    Z = Z[(p+1):end,:]
+    T = T - p # Redefining time here!()
+
+    return y, Z, T
+end
+
+
 ############################################################
 # Cache for Multi-Seasonal SARMA Reparameterization
 ############################################################
@@ -470,8 +486,6 @@ function MultiSARMAtoReg_cached!(
 
     return nothing
 end
-
-
 
 ############################################################
 # Allocating Wrapper for Multi-Seasonal SARMA Conversion

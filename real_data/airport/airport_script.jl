@@ -28,9 +28,9 @@ plot(x)
 # Model Specification
 ############################################################
 
-SARMA = false
+SARMA = true
 SAR   = false
-SMA   = true
+SMA   = false
 
 SAR_conditional = SAR ? false : false
 
@@ -90,19 +90,17 @@ if SMA
 
     pFit = sum(p2)
 
-    
-
 
 elseif SARMA
 
     s1 = [1, 12]
-    s2 = [1]
+    s2 = [1, 12]
 
     season1 = s1
     season2 = s2
 
-    p1 = [1, 3]
-    p2 = [1]
+    p1 = [1, 1]
+    p2 = [1, 1]
 
     pFit = sum(p1) + sum(p2)
 
@@ -430,8 +428,8 @@ else
 end
 
 ### Settings
-nBurn = 3000
-nIter = 5000
+nBurn = 1000
+nIter = 500
 
 ###############
 # FILTER TYPE

@@ -4,18 +4,6 @@
 # ONE-TIME setup outside MCMC
 # ------------------------------------------------------------------------------
 
-#
-# # inside each MCMC iteration:
-# init_y, Z = build_AR_init_opt_orig2!(
-#     x0_buf, int_exp, m0_buf, group_map, ws,
-#     Y, state, ϕ_expanded, activeLags_ar, p1, s1, p_max, σₑ², σy;
-#     INTERCEPT = INTERCEPT,
-#     cond_sma = cond_sma,
-#     Z = Z,
-#     l = l,
-#     rng = rng
-# )
-
 
 mutable struct SMAWorkspace{T}
     Q::Matrix{T}
@@ -46,16 +34,18 @@ function build_MA_errors_banded(
     p_max,
     σₑ²,
     σ0,
-    T_use;
+    T_use,
+    nPerGroup;
     ws_sma::SMAWorkspace,
     INTERCEPT::Bool = true,
     ztrans = "partials",
     rng::AbstractRNG = Random.default_rng(),
     presample_mode::Symbol = :posterior,   # :posterior or :simple
     use_σ0_for_presample::Bool = true,
+
 )
     T     = size(state, 1) - 1
-    T_all = T * l
+    T_all = T * nPerGroup
     q     = p_max[2]
 
     # --------------------------------------------------
@@ -66,7 +56,7 @@ function build_MA_errors_banded(
     if INTERCEPT
         intercept_grouped  = reshape(Float64.(state[2:end, 1]), 1, :)
         intercept_expanded = Matrix{Float64}(undef, 1, T_all)
-        expand_grouped_states_fast!(intercept_expanded, intercept_grouped, l, T_all)
+        expand_grouped_states_fast!(intercept_expanded, intercept_grouped, nPerGroup, T_all)
 
         @inbounds for t in 1:T_all
             y_detrended[t] = Y[t] - intercept_expanded[1, t]
@@ -141,96 +131,6 @@ function build_MA_errors_banded(
 
     return errors
 end
-
-function build_MA_errors_banded_ref(
-    errors::Vector{Float64},
-    Y::Vector{Float64},
-    state::AbstractMatrix,
-    ψ_expanded::Matrix{Float64},
-    activeLags_ma::Vector{Int},
-    p2, s2,
-    p_max,
-    σₑ²,
-    σ0,
-    T_use;
-    ws_sma::SMAWorkspace,              # new
-    INTERCEPT::Bool = true,
-    ztrans = "partials"
-)
-    T     = size(state, 1) - 1
-    T_all = T * l
-    q     = p_max[2]
-
-    # --------------------------------------------------
-    # Detrend data
-    # --------------------------------------------------
-    y_detrended = similar(Y)
-
-    if INTERCEPT
-        intercept_grouped  = reshape(Float64.(state[2:end, 1]), 1, :)
-        intercept_expanded = Matrix{Float64}(undef, 1, T_all)
-        expand_grouped_states_fast!(intercept_expanded, intercept_grouped, l, T_all)
-
-        @inbounds for t in 1:T_all
-            y_detrended[t] = Y[t] - intercept_expanded[1, t]
-        end
-    else
-        copyto!(y_detrended, Y)
-    end
-
-    # --------------------------------------------------
-    # Build σe2
-    # --------------------------------------------------
-    σe2 = σₑ² isa Number      ? Float64(σₑ²) :
-          σₑ² isa Vector     ? Float64.(σₑ²) :
-          σₑ² isa Matrix     ? vec(Float64.(σₑ²)) :
-          error("σₑ² must be scalar, vector, or 1×T matrix")
-
-    # --------------------------------------------------
-    # Sample presample ε_{1−q:0}
-    # --------------------------------------------------
-   u_tmp = similar(errors, q)
-
-   sample_SMA_presample_u_info!(
-        u_tmp,
-        u_tmp,
-        view(y_detrended, 1:T_use),          # ✔ correct data
-        view(ψ_expanded, :, 1:T_use),        # ✔ correct ψ
-        activeLags_ma,
-        σe2,
-        σ0^2,
-        q,
-        T_use,
-        ws_sma
-    )
-
-    #reverse!(u_out)
-    errors[1:q] .= reverse(u_tmp)
-    #errors[1:q] .= u_tmp
-    # --------------------------------------------------
-    # Deterministic MA recursion for ε_t, t ≥ 1
-    # --------------------------------------------------
-    k = length(activeLags_ma)
-
-    @inbounds for t in 1:T_all
-        
-        j = q + t
-        acc = 0.0
-
-        ψt = @view ψ_expanded[:, t] # start t=1
-
-        @simd for i in 1:k
-            lag = activeLags_ma[i]
-            acc += ψt[i] * errors[j - lag]
-        end
-
-        errors[j] = y_detrended[t] - acc
-    end
-
-    return errors
-end
-
-
 # u = (ε0, ε-1, ..., ε_{1-q})
 
 function sample_SMA_presample_u_info!(
@@ -375,6 +275,11 @@ function sample_SMA_presample_u_info!(
     return nothing
 end
 
+
+
+
+
+##############################################
 # Update weather beta paarmeter
 function update_beta!(r, X,σₑ², b0, B0)
     
@@ -587,158 +492,6 @@ function init_beta_hd_cd(y::AbstractVector,
     βc = (-xy1 * xx12 + xy2 * xx11) / det
 
     return βh, βc
-end
-
-
-
-
-function build_MA_errors_banded_gated(
-    errors::Vector{Float64},
-    Y::Vector{Float64},
-    state::AbstractMatrix,
-    ψ_expanded::Matrix{Float64},
-    activeLags_ma::Vector{Int},
-    p2, s2,
-    p_max,
-    σₑ²,
-    σ0,
-    T_use;
-    ws_sma::SMAWorkspace,
-    INTERCEPT::Bool = true,
-    ztrans = "partials",
-    rng::AbstractRNG = Random.default_rng(),
-    presample_mode::Symbol = :posterior,
-    use_σ0_for_presample::Bool = true,
-    stopcol=stopcol,
-    startcol=startcol
-    
-)
-    T     = size(state, 1) - 1
-    T_all = T * l
-    q     = p_max[2]
-    k     = length(activeLags_ma)
-
-    # ----------------------------------
-    # Baseline damping from MA dimension
-    # ----------------------------------
-    #r = k   # number of primitive MA modes
-    r = stopcol - startcol + 1
-    #w_base = 1.0 / sqrt(1.0 + 2 / 3.0)
-    w_base= 0.5
-
-    # ----------------------------------
-    # Detrend
-    # ----------------------------------
-    y_detrended = similar(Y)
-
-    if INTERCEPT
-        intercept_grouped  = reshape(Float64.(state[2:end, 1]), 1, :)
-        intercept_expanded = Matrix{Float64}(undef, 1, T_all)
-        expand_grouped_states_fast!(intercept_expanded, intercept_grouped, l, T_all)
-
-        @inbounds for t in 1:T_all
-            y_detrended[t] = Y[t] - intercept_expanded[1, t]
-        end
-    else
-        copyto!(y_detrended, Y)
-    end
-
-    # ----------------------------------
-    # σ handling
-    # ----------------------------------
-    σe2 = σₑ² isa Number  ? Float64(σₑ²) :
-          σₑ² isa Vector  ? Float64.(σₑ²) :
-          σₑ² isa Matrix  ? vec(Float64.(σₑ²)) :
-          error("σₑ² must be scalar, vector, or 1×T matrix")
-
-    # ----------------------------------
-    # Presample
-    # ----------------------------------
-    εprefix = view(errors, 1:q)
-    u_out   = εprefix
-
-    if presample_mode === :posterior
-        sample_SMA_presample_u_info!(
-            u_out,
-            εprefix,
-            view(y_detrended, 1:T_use),
-            view(ψ_expanded, :, 1:T_use),
-            activeLags_ma,
-            σe2,
-            σ0^2,
-            q,
-            T_use,
-            ws_sma;
-            rng = rng,
-        )
-    elseif presample_mode === :simple
-        sample_SMA_presample_u_simple!(
-            u_out,
-            εprefix,
-            σe2,
-            σ0^2,
-            q;
-            rng = rng,
-            use_σ0 = use_σ0_for_presample,
-        )
-    else
-        error("Unknown presample_mode")
-    end
-
-    reverse!(u_out)
-
-    # ----------------------------------
-    # MAIN RECURSION WITH GATING
-    # ----------------------------------
-    @inbounds for t in 1:T_all
-        j = q + t
-        acc = 0.0
-        ψt = @view ψ_expanded[:, t]
-
-        # --- MA contribution ---
-        @simd for i in 1:k
-            lag = activeLags_ma[i]
-            acc += ψt[i] * errors[j - lag]
-        end
-
-        # ----------------------------------
-        # 1. Working residual
-        # ----------------------------------
-        r_work = y_detrended[t] - acc
-
-        # ----------------------------------
-        # 2. Standardize
-        # ----------------------------------
-        σt = σe2 isa Number ? sqrt(σe2) : sqrt(σe2[min(t, end)])
-        #zt = r_work / max(σt, 1e-8)
-
-        zt = errors_reg[t] / max(σt, 1e-8)
-
-        # ----------------------------------
-        # 3. Soft gating
-        # ----------------------------------
-        c = 2.0        # threshold
-        #λ = 0.5        # strength
-
-        #c = 0.0        # threshold
-        λ = 1.0        # strength
-
-        excess = max(0.0, abs(zt) - c)
-        w_gate = 1.0 / (1.0 + λ * excess^2)
-
-        # ----------------------------------
-        # 4. Final weight (hybrid)
-        # ----------------------------------
-        #w_t = w_base * w_gate
-        w_t = w_gate
-
-        # ----------------------------------
-        # 5. Update
-        # ----------------------------------
-        errors[j] = y_detrended[t] - w_t * acc
-    end
-
-    return errors
 end
 
 

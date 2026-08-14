@@ -182,6 +182,52 @@ end
 # - Updates ORIGINAL phi via MH using grouped likelihood
 # - Optionally: disable Updateσ²ₙ when g>1 unless you implement a grouped version
 # ============================================================================
+
+
+function update_dsp!(ν, S, H, H̃, ξ, ϕ, μ, σ²ₙ, ϕ₀, κ₀, m₀, σ₀, ν₀, ψ₀,
+                     mixLogχ²₁, m, v, postDist, Dᵩ;
+                     offset = eps, updateσₙ = false, α = 1/2, β = 1/2)
+
+    p = size(ν, 2)
+
+    Ỹ = similar(ν)
+    @inbounds @simd for j in eachindex(ν)
+        Ỹ[j] = log(ν[j]^2 + eps())
+    end
+
+    @views for k in 1:p #k=1
+
+    #if INTERCEPT&&k==1
+      #σ²ₙ[k] = 0.5^2
+    #end
+
+    # mixture allocation
+    S[:,k] = UpdateMixAlloc(Ỹ[:,k], H̃[:,k] .+ μ[k], mixLogχ²₁)
+
+    H[:,k] = Update_h(Ỹ[:,k], m[S[:,k]], v[S[:,k]],
+                      Dᵩ, ξ[:,k], ϕ[k], σ²ₙ[k], μ[k])
+
+    # ---- choose δ ----
+    δ = (INTERCEPT && k == 1) ? 0.01 : 0.01
+
+    ξ[:,k] = Updateξ1(H[:,k], ϕ[k], σ²ₙ[k], μ[k], α, β; δ= δ )
+    #ξ[:,k] = Updateξ(H[:,k], ϕ[k], σ²ₙ[k], μ[k], α, β)
+
+    ϕ[k] = Updateϕ(H[:,k], ξ[:,k], μ[k], σ²ₙ[k], ϕ₀, κ₀)
+
+    if updateσₙ
+        σ²ₙ[k] = Updateσ²ₙ(H[:,k], ξ[:,k], ϕ[k], μ[k], ν₀, ψ₀)
+    end
+ 
+    μ[k] = Updateμ(H[:,k], ξ[:,k], ϕ[k], σ²ₙ[k], m₀, σ₀)
+    #μ[k] = Updateμ_kowal(H[:,k], ξ[:,k], ϕ[k],  μ[k])
+    #μ[k]  = UpdateμNC(Ỹ[:,k], H̃[:,k], m[S[:,k]], v[S[:,k]], m₀, σ₀)
+
+    @. H̃[:,k] = H[:,k] - μ[k]
+end
+    return nothing
+end
+
 function update_dsp_grouped!(
     ν, S, H, H̃, ξ, ϕ, μ, σ²ₙ,
     ϕ₀, κ₀, m₀, σ₀, ν₀, ψ₀,
@@ -597,6 +643,193 @@ function Updateμ(y, ξ, ϕ, σ²ₙ, m₀, σ₀)
     return rand(Normal(μₜ, sqrt(σₜ²)))
 end
 
+# Update kappa
+function Updateϕ(y, ξ, μ, σ²ₙ, ϕ₀, κ₀)
+    xx = 0.0
+    xy = 0.0
+
+    @inbounds for t in 2:length(y)
+        s = sqrt(ξ[t])
+        z1 = s * (y[t-1] - μ)
+        z  = s * (y[t]   - μ)
+        xx += z1*z1
+        xy += z1*z
+    end
+
+    κₜ² = 1 / (xx/σ²ₙ + 1/κ₀^2)
+    w = (xx/σ²ₙ) * κₜ²
+    ϕ̂ = xy / xx
+    ϕₜ = w*ϕ̂ + (1-w)*ϕ₀
+
+    return rand(Truncated(Normal(ϕₜ, sqrt(κₜ²)), -1, 1))
+end
+
 ### Compute exponentiated variances
 LogVol2Covs(H) = PDMat.([diagm(exp.(H[t,:])) for t in 1:size(H,1)])
 Vol2Covs(H) = PDMat(diagm(H))
+
+######### ERROR VOLATILITY
+
+### Original SV update function
+function UpdateErrorVolatility(residuals, h̄, ξ̄, ϕ̄, μ̄, σ̄²ₙ, 
+        ϕ̄₀, κ̄₀, m̄₀, σ̄₀, ν̄₀, ψ̄₀, mixLogχ²₁, m , v; offsetSV = eps())
+  
+    T = length(residuals)
+    
+    # Stochatic volatility
+    ȳ = log.(residuals.^2 .+ offsetSV)[:]
+    #s̄ = UpdateMixAlloc(ȳ, h̄, mixLogχ²₁)[:,1] # mixture allocation for log χ²₁
+    s̄ = UpdateMixAlloc(ȳ, h̄, mixLogχ²₁)
+    D̄ = BandedMatrix(-1 => repeat([-ϕ̄], T-1), 0 => Ones(T)) # Init D matrix SV
+    h̄ = Update_h(ȳ, m[s̄], v[s̄], D̄, ξ̄, ϕ̄, σ̄²ₙ, μ̄)
+    ϕ̄ = Updateϕ(h̄, ξ̄, μ̄, σ̄²ₙ, ϕ̄₀, κ̄₀)
+    σ̄²ₙ = Updateσ²ₙ(h̄, ξ̄, ϕ̄, μ̄, ν̄₀, ψ̄₀)
+    μ̄ = Updateμ(h̄, ξ̄, ϕ̄, σ̄²ₙ, m̄₀, σ̄₀)
+
+    return h̄, ϕ̄, μ̄, σ̄²ₙ
+end
+
+
+function Updateσ²ₙ(y, ξ, ϕ, μ, ν₀, ψ₀)
+    T = length(y)
+
+    sumsq = 0.0
+
+    # t = 1
+    s = sqrt(ξ[1]) * (y[1] - μ)
+    sumsq += s*s
+
+    @inbounds for t in 2:T
+        s = sqrt(ξ[t]) * (y[t] - μ - ϕ * (y[t-1] - μ))
+        sumsq += s*s
+    end
+
+    νT = ν₀ + T
+    scale = (ν₀ * ψ₀^2 + sumsq) / νT
+
+    return rand(ScaledInverseChiSq(νT, scale))
+end
+
+ScaledInverseChiSq(ν,τ²) = InverseGamma(ν/2,ν*τ²/2)
+
+function UpdateErrorVolatility_grouped!(
+    residuals,           # ORIGINAL scale residuals (length T_all)
+    h̄, ξ̄, ϕ̄, μ̄, σ̄²ₙ,
+    ϕ̄₀, κ̄₀, m̄₀, σ̄₀, ν̄₀, ψ̄₀,
+    mixLogχ²₁, m, v;
+    g::Int,
+    offsetSV = eps()
+)
+
+    T_all = length(residuals)
+    B = cld(T_all, g)   # number of blocks
+
+    # --------------------------------------------------
+    # 1. Compute grouped residual energy (NO allocations)
+    # --------------------------------------------------
+    ȳ = Vector{Float64}(undef, B)
+
+    @inbounds for b in 1:B
+        t0 = (b-1)*g + 1
+        t1 = min(b*g, T_all)
+
+        s = 0.0
+        for t in t0:t1
+            r = residuals[t]
+            s += r*r
+        end
+
+        ȳ[b] = log(s + offsetSV)
+    end
+
+    # --------------------------------------------------
+    # 2. Mixture allocation (still χ²₁ approx)
+    # --------------------------------------------------
+    s̄ = UpdateMixAlloc(ȳ, h̄, mixLogχ²₁)
+
+    # --------------------------------------------------
+    # 3. Build grouped AR(1) transition
+    # --------------------------------------------------
+    phi = ϕ̄
+    phig = (g == 1) ? phi : phi^g
+    cg   = (g == 1) ? 1.0 : cg_sum(phi, g)
+
+    σ2g = σ̄²ₙ * (cg * cg)
+
+    # build banded matrix once
+    D̄ = BandedMatrix(
+        -1 => fill(-phig, B-1),
+         0 => Ones(B)
+    )
+
+    # --------------------------------------------------
+    # 4. Update h (grouped latent log-volatility)
+    # --------------------------------------------------
+    h̄ = Update_h(
+        ȳ,
+        m[s̄],
+        v[s̄],
+        D̄,
+        ξ̄,
+        phig,
+        σ2g,
+        μ̄
+    )
+
+    # --------------------------------------------------
+    # 5. Update ξ (same as DSP style)
+    # --------------------------------------------------
+    ξ̄ = Updateξ1(h̄, phig, σ2g, μ̄, 1/2, 1/2; δ=0.01)
+
+    # --------------------------------------------------
+    # 6. Update ORIGINAL phi via grouped likelihood
+    # --------------------------------------------------
+    zprev = similar(h̄, length(h̄)-1)
+    zcurr = similar(h̄, length(h̄)-1)
+
+    build_z!(zprev, zcurr, h̄, ξ̄, μ̄)
+
+    ϕ̄, _ = Updateϕ_grouped_MH!(
+        ϕ̄,
+        zprev, zcurr,
+        σ̄²ₙ,
+        ϕ̄₀, κ̄₀;
+        g = g,
+        proposal_sd = 0.05
+    )
+
+    # --------------------------------------------------
+    # 7. Update σ²ₙ (KEEP YOUR ORIGINAL IG UPDATE)
+    # --------------------------------------------------
+    σ̄²ₙ = Updateσ²ₙ(h̄, ξ̄, ϕ̄, μ̄, ν̄₀, ψ̄₀)
+
+    # --------------------------------------------------
+    # 8. Update μ (original scale param, same as before)
+    # --------------------------------------------------
+    μ̄ = Updateμ(h̄, ξ̄, ϕ̄, σ̄²ₙ, m̄₀, σ̄₀)
+
+    return h̄, ϕ̄, μ̄, σ̄²ₙ
+end
+
+function expand_sigma_grouped!(
+    σ_full::AbstractMatrix,
+    σ_group::Vector{Float64},
+    l::Int,
+    T_all::Int
+)
+    inv_sqrt_l = 1.0 / sqrt(l)
+
+    @inbounds for b in eachindex(σ_group)
+        val = σ_group[b] * inv_sqrt_l
+
+        t0 = (b-1)*l + 1
+        t1 = min(b*l, T_all)
+
+        @simd for t in t0:t1
+            σ_full[t] = val
+        end
+    end
+
+    return σ_full
+end
+

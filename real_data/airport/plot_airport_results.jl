@@ -14,26 +14,6 @@ default(
 # Number of estimated/grouped states
 T_group = size(SAR_res[1], 1)
 
-# Map grouped states to dates across the training sample
-idx_group = round.(Int, range(1, length(timestamp_train), length=T_group))
-time_ind  = timestamp_train[idx_group]
-
-# Continuous year representation for x-axis
-time_group = year.(time_ind) .+ (month.(time_ind) .- 1) ./ 12
-
-# One tick per year
-years = unique(year.(time_ind))
-
-tick_pos = [
-    time_group[findfirst(==(yr), year.(time_ind))]
-    for yr in years
-]
-
-xticks_custom = (
-    tick_pos,
-    string.(years)
-)
-
 
 summarize_and_plot_t(
     SAR_res[1][:, 1:1, :] .+ x_med;
@@ -119,8 +99,6 @@ end
 # ==========================================================
 
 if SV||SVDSP
-
-    
 sd_meas = reshape(
     SAR_res[3],
     size(SAR_res[3],1),
@@ -162,12 +140,13 @@ if SAR
         xindex = nothing,
         xticks = xticks_custom
     )
+
 elseif SMA
 
     summarize_and_plot_t(
-        SAR_res[6][200:500,:,:];
+        SAR_res[6];
         ylim = (-1,4),
-        prefix = latexstring("Presample"),
+        prefix = latexstring("Errors"),
         true_phi = nothing,
         #xindex = nothing,
         #xticks = xticks_custom

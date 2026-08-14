@@ -181,3 +181,11 @@ function Arima(y; order = [0,0,0], seasonal = [0,0,0], xreg = nothing, include_m
     return fittedModel
 end
 
+#### Build Cargs fast threaded
+function build_Cargs_fast_threaded!(Cargs, Z, T_all)
+    @threads for t in 1:T_all
+        @inbounds copyto!(Cargs[t], view(Z, t, :))
+    end
+    return Cargs
+end
+
