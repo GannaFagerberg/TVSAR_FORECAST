@@ -1,0 +1,4 @@
+name = "TVSAR_FORECAST"
+uuid = "024bedff-af80-4790-bd25-c1b1e4bb9f1a"
+version = "0.1.0"
+authors = ["Ganna Fagerberg <hanna.fagerberg@gmail.com>"]
