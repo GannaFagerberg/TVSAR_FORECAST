@@ -114,8 +114,8 @@ elseif SARMA
 
 elseif SAR
 
-    season = [1, 24, 7*24]
-    p = [1, 1, 1]
+    season = [1, 24, 7*24, 24*364]
+    p = [1, 1, 1, 1]
 
     #season = [1, 12]
     #p = [1, 1]
@@ -405,8 +405,6 @@ end
 ############################################################
 # Grouping
 ############################################################
-
-
 # Number of observations per group
 # Here: approximately one month of hourly observations
 
@@ -441,8 +439,8 @@ else
 end
 
 ### Settings
-nBurn = 3000
-nIter = 3000
+nBurn = 500
+nIter = 500
 
 ###############
 # FILTER TYPE
@@ -458,7 +456,7 @@ filtering_methods = ("iekf", "iekfl", "iukf", "iukfl", "iplf", "diplf")
 kf_method         = filtering_methods[1]
 
 # Variance components
-var_mat = fill(0.5^2, nLags)   # MA coeffs unchanged
+var_mat = fill(0.3^2, nLags)   # MA coeffs unchanged
 
 if INTERCEPT
     var_mat[1] = 1.0^2     # level c₀ (weak prior)

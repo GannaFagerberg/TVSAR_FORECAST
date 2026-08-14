@@ -195,15 +195,83 @@ function sample_AR_presample!(
     return u
 end
 
+function sample_AR_presample_recursive!(
+    ws::PresampleWorkspace,
+    y_obs,
+    phi_mat,
+    activeLags,
+    c,
+    σ2;
+    rng = Random.default_rng(),
+)
+
+    u = ws.u
+    p = length(u)
+    k = length(activeLags)
+
+    # Use time-1 parameters for whole presample block
+    φ  = @view phi_mat[:, 1]
+    c1 = float(c[1])
+
+    σ = σ2 isa Real ? sqrt(float(σ2)) : sqrt(float(σ2[1]))
+
+    # ------------------------------------------------------------
+    # Fill from oldest to most recent:
+    #
+    # u[1] = y_{-p}, ..., u[p] = y_{-1}
+    # ------------------------------------------------------------
+    @inbounds for idx in 1:p
+
+        tcur = idx - p - 1
+
+        μt = c1
+
+        for j in 1:k
+            lag = activeLags[j]
+            ϕj  = float(φ[j])
+
+            tlag = tcur - lag
+
+            yval =
+                if tlag >= 1
+
+                    y_obs[tlag]
+
+                elseif -p <= tlag <= -1
+
+                    u[tlag + p + 1]
+
+                else
+
+                    # older than represented presample window
+                    y_obs[1]
+                end
+
+            μt += ϕj * yval
+        end
+
+        u[idx] = μt + σ * randn(rng)
+    end
+
+    # Convert to lag ordering:
+    #
+    # u[1] = most recent presample value,
+    # u[2] = second most recent, ...
+    reverse!(u)
+
+    return u
+end
+
+
 function build_AR_init_opt_orig!(
-    x0_out::AbstractVector,                 # length maxlag
-    int_exp::AbstractVector,                # length maxlag
-    m0_buf::Vector{Float64},                # length maxlag (reused)
-    group_map::AbstractVector{Int},         # length maxlag
-    ws::PresampleWorkspace,                 # workspace
+    x0_out::AbstractVector,
+    int_exp::AbstractVector,
+    m0_buf::Vector{Float64},
+    group_map::AbstractVector{Int},
+    ws::PresampleWorkspace,
     Y::AbstractVector,
     state::AbstractMatrix,
-    ϕ_expanded::AbstractMatrix{Float64},    # k × T
+    ϕ_expanded::AbstractMatrix{Float64},
     activeLags_ar,
     p1, s1,
     p_max,
@@ -214,6 +282,9 @@ function build_AR_init_opt_orig!(
     Z::AbstractMatrix,
     l::Int,
     rng::AbstractRNG = Random.default_rng(),
+    fourier_c = nothing,
+    static_int = nothing,
+    presample_method::Symbol = :posterior,
 )
 
     maxlag = maximum(activeLags_ar)
@@ -229,9 +300,10 @@ function build_AR_init_opt_orig!(
     @assert length(Y) >= p
     @assert size(Z,2) == k
 
-    # --------------------------------------------------
-    # 1) Intercept vector for presample
-    # --------------------------------------------------
+    # ============================================================
+    # 1. Presample intercept
+    # ============================================================
+
     if INTERCEPT
 
         ng = group_map[p]
@@ -249,62 +321,122 @@ function build_AR_init_opt_orig!(
             p
         )
 
+        # Fourier contribution
+        if fourier_c !== nothing
+            @inbounds @simd for t in 1:p
+                int_exp[t] += fourier_c[t]
+            end
+        end
+
+        # Static intercept contribution
+        if static_int !== nothing
+            @inbounds @simd for t in 1:p
+                int_exp[t] += static_int
+            end
+        end
+
         fill!(m0_buf, float(Y[1]))
 
     else
 
-        fill!(int_exp,0.0)
-        fill!(m0_buf,0.0)
+        fill!(int_exp, 0.0)
+        fill!(m0_buf, 0.0)
 
     end
 
     c = @view int_exp[1:p]
 
-    # --------------------------------------------------
-    # 2) Innovation variances
-    # --------------------------------------------------
+    # ============================================================
+    # 2. Innovation variances
+    # ============================================================
+
     σ2 = σₑ² isa Number ? σₑ² : @view σₑ²[1:p]
 
-    # --------------------------------------------------
-    # 3) AR coefficients
-    # --------------------------------------------------
+    # ============================================================
+    # 3. AR coefficients
+    # ============================================================
+
     phi_first = @view ϕ_expanded[:,1:p]
 
-    # --------------------------------------------------
-    # 4) Sample presample vector
-    # --------------------------------------------------
-    u = sample_AR_presample!(
-        ws,
-        @view(Y[1:p]),
-        phi_first,
-        activeLags_ar,
-        c,
-        σ2;
-        m0 = @view(m0_buf[1:p]),
-        P0_diag = σy,
-        rng = rng
+    # ============================================================
+    # 4. Construct presample values
+    # ============================================================
+
+    if presample_method === :posterior
+
+        # --------------------------------------------------------
+        # Posterior conditional sampler
+        # --------------------------------------------------------
+
+        u = sample_AR_presample!(
+            ws,
+            @view(Y[1:p]),
+            phi_first,
+            activeLags_ar,
+            c,
+            σ2;
+            m0 = @view(m0_buf[1:p]),
+            P0_diag = σy,
+            rng = rng
+        )
+
+    elseif presample_method === :recursive
+
+        # --------------------------------------------------------
+        # Simple recursive simulation
+        # --------------------------------------------------------
+
+        u = sample_AR_presample_recursive!(
+            ws,
+            @view(Y[1:p]),
+            phi_first,
+            activeLags_ar,
+            c,
+            σ2;
+            rng = rng
+        )
+
+    else
+
+        throw(
+            ArgumentError(
+                "presample_method must be :posterior or :recursive, " *
+                "got $(presample_method)"
+            )
+        )
+    end
+
+    # ============================================================
+    # 5. Copy into output
+    # ============================================================
+
+    @inbounds copyto!(
+        view(x0_out, 1:p),
+        u
     )
 
-    # --------------------------------------------------
-    # 5) Copy into output
-    # --------------------------------------------------
-    @inbounds copyto!(view(x0_out,1:p),u)
-
+    # SMA contribution
     if cond_sma !== nothing
-
-        #@assert length(cond_sma) >= p
-
         @inbounds for i in 1:p
             x0_out[i] += cond_sma[i]
         end
-
     end
 
-    # --------------------------------------------------
-    # 6) Build first regression row
-    # --------------------------------------------------
+    # ============================================================
+    # 6. First AR regression row
+    #
+    # At this point:
+    #
+    # x0_out[1] = most recent presample value
+    # x0_out[2] = second most recent
+    # ...
+    #
+    # Hence activeLags_ar indexes the correct lag.
+    # ============================================================
+
     @inbounds Z[1,:] .= @view x0_out[activeLags_ar]
 
+    # Return chronological ordering if required by subsequent code
     return reverse!(view(x0_out,1:p)), Z
-
 end
+

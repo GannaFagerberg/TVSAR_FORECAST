@@ -614,7 +614,10 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
                     INTERCEPT = INTERCEPT,
                     cond_sma  = nothing,
                     Z = Z,
-                    l = nPerGroup
+                    l = nPerGroup,
+                    presample_method = :posterior,
+                    #presample_method = :recursive,
+                    #rng=rng
                     )
         
             end
@@ -658,7 +661,7 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
     if SV
 
 
-        if nPerGroup>1
+        if nPerGroup > 1
 
              h̄, ϕ̄v, μ̄v, σ̄²ₙ = UpdateErrorVolatility_grouped!(
                residuals,           # ORIGINAL scale residuals (length T_all)
@@ -722,10 +725,10 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
        
         if SVDSP || SV
         
-            if nPerGroup>1
+            if nPerGroup > 1
                 σₑpost[:,  thin_idx]   .= σₑ_g
             else
-                σₑpost[:,  thin_idx]   = σₑ
+                σₑpost[:,  thin_idx]   .= σₑ
             end
     
         else

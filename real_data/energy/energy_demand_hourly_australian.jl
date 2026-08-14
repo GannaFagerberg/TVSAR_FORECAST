@@ -60,7 +60,7 @@ p_max = [
 # Options
 # ----------------------------------------------------------
 
-log_transform = false      # true = log(data), false = original data
+log_transform = true     # true = log(data), false = original data
 scale_factor  = 1.0
 
 

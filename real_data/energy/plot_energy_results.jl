@@ -12,7 +12,7 @@ default(
 )
 
 # Number of estimated/grouped states
-T_group = size(SAR44_res[1], 1)
+T_group = size(SAR_res[1], 1)
 
 # Map grouped states to dates across the training sample
 idx_group = round.(Int, range(1, length(timestamp_train), length=T_group))
@@ -37,11 +37,11 @@ xticks_custom = (
 
 summarize_and_plot_t(
     SAR_res[1][:, 1:1, :] .+x_med;
-    ylim = (5100, 5200),
+    ylim = (5, 12),
     prefix = "Intercept",
     true_phi = nothing,
-    xindex = time_group,
-    xticks = xticks_custom
+    #xindex = time_group,
+    #xticks = xticks_custom
 )
 
 # ==========================================================
@@ -66,8 +66,8 @@ for j in 1:p_reg
         ylim = (-1, 1),
         prefix = latexstring("\\phi_{$j,t}"),
         true_phi = nothing,
-        xindex = time_group,
-        xticks = xticks_custom
+        #xindex = time_group,
+        #xticks = xticks_custom
     )
 
 end
@@ -104,8 +104,8 @@ for k in 2:length(season) #k=3
             ylim = (-1, 1),
             prefix = latexstring("\\Phi_{$j,t}^{($s)}"),
             true_phi = nothing,
-            xindex = time_group,
-            xticks = xticks_custom
+            #xindex = time_group,
+            #xticks = xticks_custom
         )
 
     end
@@ -118,6 +118,55 @@ end
 # MEASUREMENT VOLATILITY σ_{e,t}
 # ==========================================================
 
-histogram( SAR44_res[3])
+if SV||SVDSP
+
+    
+sd_meas = reshape(
+    SAR_res[3],
+    size(SAR_res[3],1),
+    1,
+    size(SAR_res[3],2)
+)
+
+sd=1
+summarize_and_plot_t(
+    sd_meas .*sd ;
+    #sd_meas .*sd ./sqrt(nPerGroup);
+    ylim=(0,2.0),
+    #xlim=(0,T/l),
+    prefix=L"\sigma_{e,t}",
+    true_phi=nothing,
+    #xindex = time_group,
+    #xticks = nothing
+)
+else
+    histogram( SAR_res[3])
+end
+
+
+
+ #θpost, Hpost, σₑpost, ϕpost, μpost, y_mx, static_state_var, cond_mean_post, intercept_true
+
+# ==========================================================
+# INITIAL PRESAMPLE
+# ==========================================================
+
+
+#return θpost, Hpost, σₑpost, ϕpost, μpost, μ̃post, ϕ̃post, h̃post, σ̄²ₙpost, y_mx, static_state_var, intercept_true
+summarize_and_plot_t(
+    exp.(SAR_res[6].+ x_med);
+    ylim = (2500, 8000),
+    prefix = latexstring("Presample"),
+    true_phi = exp.(x_init),
+    xindex = nothing,
+    xticks = xticks_custom
+)
+
+# ==========================================================
+# MU PRESAMPLE
+# ==========================================================
+
+#histogram(SAR_res[5][1,:])
+#histogram(SAR_res[4][3,:])
 
 
