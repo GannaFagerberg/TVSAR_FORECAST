@@ -189,3 +189,44 @@ function build_Cargs_fast_threaded!(Cargs, Z, T_all)
     return Cargs
 end
 
+
+function expand_grouped_states(states::AbstractArray, k::Int, original_length::Int)
+
+    nd = ndims(states)
+
+    # --------------------------------------------------------
+    # Case 1: Vector (Tgrouped)
+    # --------------------------------------------------------
+    if nd == 1
+        expanded = repeat(states, inner=[k])
+        return expanded[1:original_length]
+
+    # --------------------------------------------------------
+    # Case 2: Matrix (Tgrouped × d)
+    # --------------------------------------------------------
+    elseif nd == 2
+        expanded_cols = [expand_grouped_states(states[:, j], k, original_length)
+                         for j in 1:size(states, 2)]
+        return hcat(expanded_cols...)
+
+    # --------------------------------------------------------
+    # Case 3: 3D array (Tgrouped × d × draws)
+    # --------------------------------------------------------
+    elseif nd == 3
+        Tgrouped, d, ndraws = size(states)
+
+        expanded = Array{eltype(states)}(undef, original_length, d, ndraws)
+
+        for j in 1:d
+            for m in 1:ndraws
+                expanded[:, j, m] =
+                    expand_grouped_states(view(states, :, j, m), k, original_length)
+            end
+        end
+
+        return expanded
+
+    else
+        throw(ArgumentError("expand_grouped_states only supports 1D, 2D, or 3D arrays"))
+    end
+end

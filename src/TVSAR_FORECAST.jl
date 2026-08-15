@@ -32,6 +32,8 @@ using Colors
 using Measures
 using LaTeXStrings
 using Plots
+using RCall
+using Base.Threads
 
 include("TVSARUtils.jl")
 export Arima,compute_resid!, compute_residulas!, clamp_partials!,expand_grouped_states_fast!

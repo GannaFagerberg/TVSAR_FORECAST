@@ -19,31 +19,29 @@
 # Data
 ############################################################
 
-#x = x_detrend
-x = x_data
+x = x_detrend
+#x = x_data
 plot(x)
 # T / (30 * 24)
 
 ############################################################
 # Model Specification
 ############################################################
+#model_type = :SMA
+# model_type = :SAR
+model_type = :SARMA
 
-SARMA = true
-SAR   = false
-SMA   = false
+SAR_conditional = model_type == :SAR ? false : false
 
-SAR_conditional = SAR ? false : false
-
-SV          = false
-SVDSP       = true
-DSP_label   = true
-use_fourier = false
-
+# Variance specification
+obs_var_type   = :static     # :SV, :SVDSP, :static
+state_var_type = :DSP       # :DSP, :static
 
 INTERCEPT = true
-#nPerGroup = 24 * 30
-nPerGroup = 1
+nPerGroup = 24 * 30
+#nPerGroup = 1
 
+use_fourier = false
 
 ############################################################
 # Intercept Dynamics
@@ -74,13 +72,14 @@ end
 # Seasonality and Model Orders
 ############################################################
 
-if SMA
+# ==================================================
+# Model specification
+# ==================================================
 
-    #season = [1, 24, 7*24]
-    #p = [1, 1, 1]
+if model_type == :SMA
 
     season = [1, 12]
-    p = [1, 2]
+    p      = [1, 1]
 
     s1 = season
     p1 = p
@@ -91,27 +90,24 @@ if SMA
     pFit = sum(p2)
 
 
-elseif SARMA
+elseif model_type == :SARMA
 
-    s1 = [1, 12]
-    s2 = [1, 12]
+    s1 = [1, 24, 24*7]
+    s2 = [1, 24, 24*7]
 
-    season1 = s1
-    season2 = s2
-
-    p1 = [1, 1]
-    p2 = [1, 1]
+    p1 = [1, 1 ,1]
+    p2 = [1, 1 ,1]
 
     pFit = sum(p1) + sum(p2)
 
 
-elseif SAR
+elseif model_type == :SAR
 
     season = [1, 24, 7*24]
-    p = [2, 1, 2]
+    p      = [2, 1, 2]
 
     #season = [1, 12]
-    #p = [1, 1]
+    #p      = [1, 1]
 
     s1 = season
     p1 = p
@@ -121,10 +117,12 @@ elseif SAR
 
     pFit = sum(p1)
 
-    # Maximum lag implied by AR/MA polynomials
+
+else
+
+    error("model_type must be :SAR, :SMA, or :SARMA")
 
 end
-
 
 ############################################################
 # Maximum Lag
@@ -165,7 +163,7 @@ end
 # Prior Parameters
 ############################################################
 
-if SARMA || SMA
+if model_type in (:SARMA, :SMA)
 
     fitted_model = Arima(
         x,
@@ -189,7 +187,7 @@ if SARMA || SMA
     σ0 = sqrt(resid_variance)
 
 
-elseif SAR
+elseif model_type == :SAR
 
     fitted_model = Arima(
         x[1:200],
@@ -202,6 +200,11 @@ elseif SAR
 
     resid_variance = fitted_model[:sigma2]
     σ0 = sqrt(resid_variance)
+
+
+else
+
+    error("model_type must be :SAR, :SMA, or :SARMA")
 
 end
 
@@ -223,12 +226,13 @@ beta_sigma  = 0.001
 # SARMA Model
 ############################################################
 
-if SARMA
+# ============================================================
+# Construct regressors by model type
+# ============================================================
 
-    # ------------------------------------------------------
+if model_type == :SARMA
+
     # MA regressors
-    # ------------------------------------------------------
-
     init_errors = vcat(
         fill(0.0, p_max[2]),
         residuals
@@ -239,11 +243,7 @@ if SARMA
         p_max[2]
     )
 
-
-    # ------------------------------------------------------
     # AR regressors
-    # ------------------------------------------------------
-
     init_y = fill(mean(x[1:50]), p_max[1])
     obs    = vcat(init_y, x)
 
@@ -252,49 +252,28 @@ if SARMA
         p_max[1]
     )
 
-
-    # ------------------------------------------------------
-    # Select active AR and MA lags
-    # ------------------------------------------------------
-
+    # Active lags
     activeLags_ar = FindActiveLagsMultiSAR(p1, s1)
     activeLags_ma = FindActiveLagsMultiSAR(p2, s2)
 
     Z_ar = Z_ar[:, activeLags_ar]
     Z_ma = Z_ma[:, activeLags_ma]
 
-
-    # Combined AR and MA design matrix
+    # Combined design
     Z = hcat(Z_ar, Z_ma)
 
 
-############################################################
-# SMA Model
-############################################################
-
-elseif SMA
+elseif model_type == :SMA
 
     Y = x
 
-
-    # ------------------------------------------------------
     # Initialize MA errors
-    # ------------------------------------------------------
-
-    # init_errors = vcat(fill(0.0, p_max[2]), residuals)
-
     init_errors = vcat(
         fill(median(Y), p_max[2]),
         residuals
     )
 
-    # _, Z_ma, T = SetupARReg(init_errors[:, 1], p_max[2])
-
-
-    # ------------------------------------------------------
-    # Select active MA lags and construct regressors
-    # ------------------------------------------------------
-
+    # Active MA lags and regressors
     activeLags_ma = FindActiveLagsMultiSAR(p2, s2)
 
     _, Z, T = SetupARReg_active(
@@ -303,20 +282,12 @@ elseif SMA
     )
 
     activeLags_ar = activeLags_ma
+    errors_reg    = init_errors
 
-    errors_reg = init_errors
 
+elseif model_type == :SAR
 
-############################################################
-# SAR Model
-############################################################
-
-elseif SAR
-
-    # ------------------------------------------------------
     # Initialize observations / presample values
-    # ------------------------------------------------------
-
     if SAR_conditional
 
         obs = vcat(
@@ -331,29 +302,17 @@ elseif SAR
 
     end
 
-
-    # ------------------------------------------------------
-    # Determine active seasonal AR lags
-    # ------------------------------------------------------
-
+    # Active AR lags
     activeLags_ar = FindActiveLagsMultiSAR(p1, s1)
     activeLags_ma = activeLags_ar
 
-
-    # ------------------------------------------------------
-    # Construct regressors using only active lags
-    # ------------------------------------------------------
-
+    # Construct regressors
     Y, Z, T = SetupARReg_active(
         obs,
         activeLags_ar
     )
 
-
-    # ------------------------------------------------------
     # Optional Fourier-adjusted regressors
-    # ------------------------------------------------------
-
     if use_fourier
 
         init_f = fill(
@@ -370,8 +329,32 @@ elseif SAR
             obs_f,
             activeLags_ar
         )
-
     end
+
+
+else
+
+    error("model_type must be :SAR, :SMA, or :SARMA")
+
+end
+
+
+# ============================================================
+# Posterior shape parameters
+# ============================================================
+
+if model_type == :SAR
+
+    alpha_sigma_hat = alpha_sigma + T / 2
+
+    alpha_sigma_hat_state =
+        alpha_sigma + (T / nPerGroup - 1) / 2
+
+else
+
+    # alpha_sigma_hat = alpha_sigma + (T + p_max[2]) / 2
+
+    alpha_sigma_hat = alpha_sigma + T / 2
 
 end
 
@@ -379,7 +362,7 @@ end
 # Posterior Shape Parameters
 ############################################################
 
-if SAR
+if model_type == :SAR
 
     alpha_sigma_hat = alpha_sigma + T / 2
 
@@ -428,8 +411,8 @@ else
 end
 
 ### Settings
-nBurn = 1000
-nIter = 500
+nBurn = 2000
+nIter = 2000
 
 ###############
 # FILTER TYPE
@@ -458,26 +441,20 @@ end
 Σ₀ = PDMat(Diagonal(var_mat))
 μ₀ = zeros(nLags)
 
-if INTERCEPT&&SMA
+if INTERCEPT && model_type == :SMA
     μ₀[1] = mean(Y[1:10])
 end
-
-ϕ₀ = 0.5
-κ₀ = 0.3
-
-m₀ = -15.0 + log(nPerGroup)  # -20 now
-σ₀ = 3.0 # MA scale
 
 
 priorSettings = (
             # --------------------------------------------------
             # State evolution priors
             # --------------------------------------------------
-            ϕ₀ = ϕ₀,                 # Prior mean for ϕ
-            κ₀ = κ₀,                 # Prior std for ϕ ~ N(ϕ₀, κ₀²)
+            ϕ₀ = 0.5,                 # Prior mean for ϕ
+            κ₀ = 0.3,                 # Prior std for ϕ ~ N(ϕ₀, κ₀²)
 
-            m₀ = m₀,                 # Prior mean for μ
-            σ₀ = σ₀,                 # Prior std for μ ~ N(m₀, σ₀²)
+            m₀ = -15.0 + log(nPerGroup),                 # Prior mean for μ
+            σ₀ = 3.0,                 # Prior std for μ ~ N(m₀, σ₀²)
 
             ν₀ = 3.0,                # Prior df for σ²ₙ
             ψ₀ = 1.0,                # Prior scale for σ²ₙ
@@ -517,15 +494,12 @@ algoSettings = (
             resid_label = iterated,
             method_label = Symbol(kf_method),
 
-            SARMA = SARMA,
-            SAR   = SAR,
-            SMA   = SMA,
+            model_type = model_type,
             
             SAR_conditional = SAR_conditional,
 
-            SV        = SV,
-            SVDSP     = SVDSP,
-            DSP_label = DSP_label
+            obs_var_type   = obs_var_type ,     # :SV, :SVDSP, :static
+            state_var_type = state_var_type     # :DSP, :static
             
             )
 
@@ -639,6 +613,7 @@ SAR_res = GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSet
 t_end = time()
 println("Elapsed: ", (t_end - t_st)/60, " mins") #3.48, 1.29
 
+
 #using JLD2f
 #file="C:/Users/Anna Fagerberg/Desktop/PROJECTS_IN_JULIA/PAPERS_Julia/SARMA/REAL_DATA/Electricity_UK/SAR111_48_336_2016_2019_relu098.jld2"
 #file="C:/Users/Anna Fagerberg/Desktop/PROJECTS_IN_JULIA/PAPERS_Julia/SARMA/REAL_DATA/Electricity_Australia/SAR222_24_168_presentation_gr_m_dsp_prior.jld2"
@@ -692,5 +667,6 @@ end
   #SAR44_results = SAR44_results[2]
   #SAR44_results = SAR44_results_demean[2]; sd=1
   #SAR44_results_monah = SAR44_results
+
 
   #sd
