@@ -112,7 +112,7 @@ x_scaled = x ./ scale_factor
 ############################################################
 
 # Five years of hourly observations
-#T_train = 5 * 24 * 30 * 12
+T_train = 5 * 24 * 30 * 12
 #T_train = length(data)
 
 # Presample observations
@@ -151,10 +151,10 @@ time_test = timestamp[test_idx]
 # Initial level estimated from first 30 training observations
 med_window = 30
 
-x_med = median(x_train[1:med_window])
+train_mean = median(x_train[1:med_window])
 
 # Center training observations
-x_detrend = x_train .- x_med
+x_detrend = x_train .- train_mean
 
 
 ############################################################
