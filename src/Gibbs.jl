@@ -98,7 +98,8 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
     # ==================================================
     nBurn, nIter, INTERCEPT, resid_label,
     method_label, model_type,
-    SAR_conditional, obs_var_type , state_var_type, ma_regressor_type = algoSettings 
+    SAR_conditional, obs_var_type , state_var_type, ma_regressor_type,
+    clipped_partials,p_threshold, presample_AR,presample_MA = algoSettings 
 
     # ==================================================
     # Model settings
@@ -379,6 +380,8 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
 
     if model_type == :SAR
 
+        pFit = sum(p1)
+
         p = p_max[1]
 
         maxlag = p
@@ -389,10 +392,7 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
             activeLags_ar
         )
 
-        group_map = build_group_map(
-            p,
-            nPerGroup
-        )
+        group_map = build_group_map(p,nPerGroup)
 
         int_exp = zeros(Float64, p)
         x0_buf  = zeros(Float64, p)
@@ -408,6 +408,8 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
 
 
     elseif model_type == :SMA
+
+        pFit = sum(p2)
 
         q         = p_max[2]
         maxlag_ma = maximum(activeLags_ma)
@@ -430,6 +432,8 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
 
 
     elseif model_type == :SARMA
+
+        #pFit = sum(p1)
 
         maxlag_ma = maximum(activeLags_ma)
 
@@ -497,6 +501,7 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
         # Full SARMA workspace
         # --------------------------------------------------
 
+        pFit = sum(p1) + sum(p2)
         ws_sarma = IEKFWorkspace(
             nLags,
             nPerGroup,
@@ -520,12 +525,10 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
     # ==================================================
 
     cond_mean_post = zeros(Float64, T_all)
+    cond_mean      = zeros(Float64, T_all)
     residuals      = zeros(Float64, T_all)
 
-    group_map_T = build_group_map(
-        T_all,
-        nPerGroup
-    )
+    group_map_T = build_group_map(T_all,nPerGroup)
 
     # ==================================================
     # Temporary AR transformation buffers
@@ -603,7 +606,13 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
             mode = method_label,
             startcol = startcol,
             INTERCEPT=INTERCEPT,
-            negative_signs = model_type == :SAR
+            negative_signs = model_type == :SAR,
+            cache = cache_ar,
+            ztrans = ztrans,
+            clipped_partials = clipped_partials,
+            p_threshold = p_threshold,
+            intercept_dynamics = intercept_dynamics,
+            scaled = false
         )
 
     end
@@ -653,7 +662,8 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
 
     else
 
-        static_var .= compute_noise_SARMA_multi(
+        ### Var.
+        static_var .= compute_noise_SARMA(
             alpha_sigma_hat,
             beta_sigma,
             omega
@@ -894,85 +904,85 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
         # --------------------------------------------------------
 
         # ==========================================================
-# MA regressor construction
-# ==========================================================
+    # MA regressor construction
+    # ==========================================================
 
-if ma_regressor_type == :median_freeze
+    if ma_regressor_type == :median_freeze
 
-    # ------------------------------------------------------
-    # Median trick: learn Z, then freeze
-    # ------------------------------------------------------
+        # ------------------------------------------------------
+        # Median trick: learn Z, then freeze
+        # ------------------------------------------------------
 
-    if i <= freeze_iter
+        if i <= freeze_iter
 
-        errors_reg = build_MA_errors_banded(
-                errors,
-                Y,
-                state,
-                ψ_expanded,
-                activeLags_ma,
-                p2,
-                s2,
-                p_max,
-                σₑ²,
-                σ0,
-                T_use,
-                nPerGroup;
-                ws_sma = ws_sma,
-                INTERCEPT = INTERCEPT,
-                ztrans = ztrans,
-                presample_mode = :posterior,
-                use_σ0_for_presample = true
-            )
+            errors_reg = build_MA_errors_banded(
+                    errors,
+                    Y,
+                    state,
+                    ψ_expanded,
+                    activeLags_ma,
+                    p2,
+                    s2,
+                    p_max,
+                    σₑ²,
+                    σ0,
+                    T_use,
+                    nPerGroup;
+                    ws_sma = ws_sma,
+                    INTERCEPT = INTERCEPT,
+                    ztrans = ztrans,
+                    presample_mode = presample_MA,
+                    use_σ0_for_presample = true
+                )
 
-            # Store current reconstructed error path
-            errors_med[:, i] .= errors_reg
+                # Store current reconstructed error path
+                errors_med[:, i] .= errors_reg
 
-            # Running pointwise median
-            med_error = dropdims(
-                median(
-                    @view(errors_med[:, 1:i]),
+                # Running pointwise median
+                med_error = dropdims(
+                    median(
+                        @view(errors_med[:, 1:i]),
+                        dims = 2
+                    );
                     dims = 2
-                );
-                dims = 2
-            )
+                )
 
-            # Build Z from median error path
-            _, Z_MA, _ = SetupARReg_active(
-                med_error,
-                activeLags_ma
-            )
+                # Build Z from median error path
+                _, Z_MA, _ = SetupARReg_active(
+                    med_error,
+                    activeLags_ma
+                )
 
-            Z .= Z_MA
+                Z .= Z_MA
 
-            # Freeze design
-            if i == freeze_iter
-                Z_fixed = copy(Z_MA)
+                # Freeze design
+                if i == freeze_iter
+                    Z_fixed = copy(Z_MA)
+                end
+
+                # Current reconstructed errors
+                residuals .= errors_reg[maxlag_ma+1:end]
+
+            else
+
+                # Fixed Z after adaptation
+                Z .= Z_fixed
+
+                compute_conditional_mean!(
+                    cond_mean,
+                    Z,
+                    ψ_expanded,
+                    state,
+                    group_map_T;
+                    INTERCEPT = INTERCEPT
+                )
+
+                compute_residuals!(
+                    residuals,
+                    Y,
+                    cond_mean
+                )
             end
-
-            # Current reconstructed errors
-            residuals .= errors_reg[maxlag_ma+1:end]
-
-        else
-
-            # Fixed Z after adaptation
-            Z .= Z_fixed
-
-            compute_conditional_mean!(
-                cond_mean,
-                Z,
-                ψ_expanded,
-                state,
-                group_map_T;
-                INTERCEPT = INTERCEPT
-            )
-
-            compute_residuals!(
-                residuals,
-                Y,
-                cond_mean
-            )
-        end
 
 
     elseif ma_regressor_type == :current
@@ -997,7 +1007,7 @@ if ma_regressor_type == :median_freeze
             ws_sma = ws_sma,
             INTERCEPT = INTERCEPT,
             ztrans = ztrans,
-            presample_mode = :posterior,
+            presample_mode = presample_MA,
             use_σ0_for_presample = true
         )
 
@@ -1080,7 +1090,7 @@ if ma_regressor_type == :median_freeze
                 cond_sma = nothing,
                 Z = Z,
                 l = nPerGroup,
-                presample_method = :posterior
+                presample_method = presample_AR
             )
         end
 
@@ -1186,11 +1196,11 @@ if ma_regressor_type == :median_freeze
                 #offsetSV = 10^-4
             )
 
-        if d_order == 1
+        #if d_order == 1
             σₑ = vec(reshape(exp.(hstar[2:end] ./ 2), :, 1))
-        else
-            σₑ = vec(reshape(exp.(hstar[3:end] ./ 2), :, 1))
-        end
+        #else
+            #σₑ = vec(reshape(exp.(hstar[3:end] ./ 2), :, 1))
+        #end
 
 
     elseif obs_var_type == :static
@@ -1268,9 +1278,9 @@ if ma_regressor_type == :median_freeze
 
             μ̃post[:, thin_idx]   .= μ̄v
             ϕ̃post[:, thin_idx]   .= ϕ̄v
-            σ̄²ₙpost[:, thin_idx] .= σ̄²ₙ
-
-        elseif obs_var_type == :SVDSP
+            σ̄²ₙpost[:, thin_idx]  .= σ̄²ₙ
+ 
+        elseif obs_var_type == :SVDSP 
 
             h̃post[:, thin_idx] .= h̄
             μ̃post[:, thin_idx] .= μ̄v
@@ -1330,16 +1340,16 @@ if ma_regressor_type == :median_freeze
             if obs_var_type in (:SV, :SVDSP)
 
                 return θpost, Hpost, σₑpost,
-                    ϕpost, μpost,
-                    μ̃post, ϕ̃post, h̃post, σ̄²ₙpost,
-                    y_mx, static_state_var, intercept_true
+                        ϕpost, μpost,
+                        μ̃post, ϕ̃post, h̃post, σ̄²ₙpost,
+                        y_mx, static_state_var, intercept_true
 
             else
 
                 return θpost, Hpost, σₑpost,
-                    ϕpost, μpost,
-                    y_mx, static_state_var,
-                    cond_mean_post, intercept_true
+                        ϕpost, μpost,
+                        y_mx, static_state_var,
+                        cond_mean_post, intercept_true
             end
 
         else
@@ -1380,7 +1390,14 @@ function FFBSx(
     mode::Symbol=:iekf,
     startcol =    startcol,
     INTERCEPT::Bool=true,
-    negative_signs::Bool = true
+    negative_signs::Bool = true,
+    cache::SARMARegCache,
+    ztrans::AbstractString = "partials",
+    clipped_partials::Bool = false,
+    p_threshold::Float64 = Inf,
+    intercept_dynamics::Union{Symbol,Nothing} = nothing,
+    scaled::Bool = false,
+    Sdiag = nothing
 )
 
    # unpack what you use inside
@@ -1419,11 +1436,8 @@ function FFBSx(
     μ_upd = similar(μ)
     Σ_upd = similar(Σ)
 
-    nreg = length(cache_ar.activeLags)
-    #ws = IEKFWorkspace(n, ny, nreg; T=Float64)
-    #ws = IEKFWorkspace(n, ny, nreg, pFit; T=Float64)
-
-    #Σₑ_g  = group_vector(Σₑ, l)
+    nreg = length(cache.activeLags)
+    
     Σₙ_buf = similar(Σ)
 
     μ_filter = zeros(T, n)
@@ -1485,14 +1499,6 @@ function FFBSx(
             Ω̄_buf .+= Σₙt
         end
      
-        # update (RESTORE THIS)
-
-        if negative_signs
-            cache_type = cache_ar
-        else
-            cache_type = cache_ma
-        end
-
         kalmanfilter_update_IEKF_seq!(
             μ_upd, Σ_upd,
             μ̄_buf, Ω̄_buf,
@@ -1505,7 +1511,7 @@ function FFBSx(
             resid_check,
             Val(mode),
             ws;
-            cache    = cache_type,
+            cache    = cache,
             ztrans   = ztrans,
             clipped_partials = clipped_partials,
             INTERCEPT   = INTERCEPT,

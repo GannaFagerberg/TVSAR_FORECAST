@@ -6,8 +6,7 @@ g_new  = 1
 T      = length(y_g)
 season = s1
 
-forecastHorizons  = length(y_test[1:168])
-#forecastHorizons  = length(y_test)
+forecastHorizons = collect(1:length(y_test))
 
 nPredPerIter      = 20
 statTrans         = ztrans
@@ -30,12 +29,21 @@ activeLags = activeLags_ar
 #histogram(SAR_res[5][1,:])
 #plot(SAR_res[2][:,1,2])
 
-if DSP_label
-    Hₜpost = SAR_res[2][T,:,:] .- log(nPerGroup) .+ log(g_new) 
-    μpost = SAR_res[5] .- log(nPerGroup) .+ log(g_new)
-    ϕpost = (SAR_res[4])
+if algoSettings.state_var_type == :DSP
+
+    Hₜpost = SAR_res[2][end, :, :] .-
+             log(nPerGroup_fit) .+
+             log(g_new)
+
+    μpost = SAR_res[5] .-
+            log(nPerGroup_fit) .+
+            log(g_new)
+
+    ϕpost = SAR_res[4]
+
 else
-    Hₜpost = (SAR44_res[7]./nPerGroup).*g_new
+    # Hₜpost is VARIANCE here
+    Hₜpost = (SAR_res[7] ./ nPerGroup_fit) .* g_new
     ϕpost = nothing
     μpost = nothing
 end
@@ -73,22 +81,22 @@ end
 
 # DSP parameters
 # Initialize optional objects
-σ²ₙpost = nothing
-ϕ̃post  = nothing
-μ̃post  = nothing
-h̃post = nothing
-σ̄²ₙpost = nothing
-
+σ²ₙpost   = nothing
+ϕ̃post    = nothing
+μ̃post    = nothing
+h̃post    = nothing
+σ̄²ₙpost   = nothing
 
 # ----------------------------------------------------------
 # Handle SV / SVDSP cases
 # ----------------------------------------------------------
-if SV
+
+if algoSettings.obs_var_type == :SV
     μ̃post  = SAR44_res[6][1,:]
     ϕ̃post  = SAR44_res[7][1,:]
     σ̄²ₙpost = SAR44_res[9][1,:]
 
-elseif SVDSP
+elseif algoSettings.obs_var_type == :SVDSP
 
     μ̃post = SAR44_res[6][1,:]
     ϕ̃post = SAR44_res[7][1,:]
@@ -101,12 +109,11 @@ end
 # ----------------------------------------------------------
 # Run Forecast Simulation
 # ----------------------------------------------------------
-
 t_st = time()
-res_forecast = PredLocalMultiSAR_SV_gr(
-#res_forecast = PredLocalMultiSAR_SV_fourier_new(
+
+res_forecast, LPS_est, AE = PredLocalMultiSAR_SV_gr(
     nPredPerIter,
-    y_test[1:forecastHorizons],
+    y_test,
     zₜall_orig,
     p1,
     season,
@@ -122,17 +129,38 @@ res_forecast = PredLocalMultiSAR_SV_gr(
     h̃post,
     σ̄²ₙpost,
     forecastHorizons;
-    DSP_label=DSP_label,
-    g_fc= g_new,
-    INTERCEPT=INTERCEPT,
-    #use_fourier   = use_fourier,
-    #β_fourier_post = fourier_coeffs,
-    #fourier_future = F_future,
-    #S_sc = S_sc
+    state_var_type = state_var_type,
+    obs_var_type   = obs_var_type,
+    g_fc = g_new,
+    INTERCEPT = INTERCEPT,
+    H_freeze = false,
+    STATE_fixed = false,
+    use_fourier = false,
+    intercept_dynamics = intercept_dynamics,
+    startcol = startcol,
+    p_threshold = p_threshold
 )
 
 t_end = time()
-println("Elapsed: ", (t_end - t_st)/60, " mins") #1.3689499974250794 mins
+
+println("Elapsed: ", (t_end - t_st) / 60, " mins")
+
+plot(
+    forecastHorizons,
+    LPS_est,
+    xlabel = "Forecast horizon",
+    ylabel = "LPS",
+    legend = false
+)
+
+plot(
+    forecastHorizons,
+    AE,
+    xlabel = "Forecast horizon",
+    ylabel = "Absolute error",
+    legend = false
+)
+
 
 # ----------------------------------------------------------
 # Extract Forecast Results
@@ -140,7 +168,8 @@ println("Elapsed: ", (t_end - t_st)/60, " mins") #1.3689499974250794 mins
 
 y_res = res_forecast
 
-h_length=forecastHorizons
+h_length=maximum(forecastHorizons)
+
 y_h50 = reshape(
     y_res,
     length(y_test[1:h_length]),
@@ -149,20 +178,23 @@ y_h50 = reshape(
 )
 
 #res_transf = exp.(y_h50.+ x_mean).*scale_factor
+
+log_transform = false
 if log_transform
-    res_transf =  exp.((y_h50 .+ x_med).*scale_factor)
+    res_transf =  exp.((y_h50 .+ train_mean))
 else
-    res_transf =  (y_h50 .+ x_med).*scale_factor
+    res_transf =  (y_h50 .+ train_mean)
 end
 
 y_mat = reshape(y_test, :, 1)
 #truth = exp.(y_mat[1:forecastHorizons,:])
-truth = y_mat[1:h_length,:]
+truth = y_mat[1:h_length,:] .+ train_mean
+
 plot_state(
     #res_transf[1:forecastHorizons,:,:].+future_seasonal[1:forecastHorizons] ;
-    res_transf[1:forecastHorizons,:,:] ;
+    res_transf[1:h_length,:,:] ;
     prefix = "TV-SAR(1,1,1)s=24,168",
-    ylim = (3000,8000),
+    ylim = (5,10),
     xlim = (0,forecastHorizons),
     true_phi =truth,
     alpha = 0.05,

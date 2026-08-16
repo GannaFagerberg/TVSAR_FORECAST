@@ -14,15 +14,50 @@ using Plots
 
 cd("C:/Users/Anna Fagerberg/Desktop/PROJECTS IN JULIA/DATA")
 
+using CSV, DataFrames, Dates
+
 df = CSV.read(
     "AustralianElecPriceDemand202512_hourly.csv",
     DataFrame
 )
 
-# Victorian electricity demand and timestamps
-data      = df.demand_VIC
-timestamp = df.datetime
+df_covid = select_period(
+    df,
+    DateTime(2020, 3, 1),# 1, March 00:00
+    DateTime(2021, 12, 31, 23) #31 December 2021 at 23:00:00
+)
 
+data      = df_covid.demand_VIC
+timestamp = df_covid.datetime
+
+df_covid_start = select_period(
+    df,
+    DateTime(2016, 1, 1),
+    DateTime(2020, 12, 31, 23)
+)
+
+data      = df_covid_start.demand_VIC
+timestamp = df_covid_start.datetime
+
+
+# Make sure datetime is DateTime
+#df.datetime = DateTime.(df.datetime)
+
+# ---------------------------------------------------------
+# Choose any period you want
+# ---------------------------------------------------------
+#start_date = DateTime(2020, 3, 1)
+#end_date   = DateTime(2021, 12, 31, 23, 59, 59)
+
+#idx = (df.datetime .>= start_date) .&(df.datetime .<= end_date)
+#df_sub = df[idx, :]
+
+# Victorian electricity demand and timestamps
+#data      = df_sub.demand_VIC
+#timestamp = df_sub.datetime
+
+#println(df[1,:])#2001-01-01T01:00:00
+#println(df[end,:]) # 2026-01-01T00:00:00
 
 ############################################################
 # 2. Model Specification
@@ -63,21 +98,11 @@ p_max = [
 log_transform = true     # true = log(data), false = original data
 scale_factor  = 1.0
 
-
-# ----------------------------------------------------------
-# Transformation
-# ----------------------------------------------------------
-
 if log_transform
     x = log.(data)
 else
     x = copy(data)
 end
-
-
-# ----------------------------------------------------------
-# Scaling
-# ----------------------------------------------------------
 
 x_scaled = x ./ scale_factor
 
@@ -87,7 +112,8 @@ x_scaled = x ./ scale_factor
 ############################################################
 
 # Five years of hourly observations
-T_train = 5 * 24 * 30 * 12
+#T_train = 5 * 24 * 30 * 12
+#T_train = length(data)
 
 # Presample observations
 x_init = x_scaled[1:p_max[1]]
@@ -99,7 +125,6 @@ x_train         = x_scaled[train_idx]
 timestamp_train = timestamp[train_idx]
 
 T = length(x_train)
-
 
 ############################################################
 # 5. Forecast / Test Sample

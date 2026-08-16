@@ -1,4 +1,24 @@
 # ==========================================================
+# INTERCEPT
+# ==========================================================
+#nPerGroup=1
+T_group=size( SAR_res[1][:, 1:1, :])[1]
+T =length(x)
+
+if INTERCEPT
+    summarize_and_plot_t(
+        expand_grouped_states(
+            SAR_res[1][:, 1:1, :],
+            nPerGroup,
+            T
+        );
+        ylim = (-10, 10),
+        prefix = "Intercept",
+        #true_phi = true_intercept
+    )
+end
+
+# ==========================================================
 # AR / MA COEFFICIENTS
 # ==========================================================
 
@@ -26,7 +46,7 @@ if model_type == :SAR
             );
             ylim = (-1, 1),
             prefix = latexstring("\\phi_{$j,t}"),
-            true_phi = phi
+            #true_phi = phi
         )
     end
 
@@ -55,14 +75,14 @@ if model_type == :SAR
                 );
                 ylim = (-1, 1),
                 prefix = latexstring("\\Phi_{$j,t}^{($s)}"),
-                true_phi = Phi
+                #true_phi = Phi
             )
         end
 
         seasonal_startcol += p_seas
     end
 
-
+    
 elseif model_type == :SMA
 
     # ======================================================
@@ -87,7 +107,7 @@ elseif model_type == :SMA
             );
             ylim = (-1, 1),
             prefix = latexstring("\\psi_{$j,t}"),
-            true_phi = phi
+            #true_phi = phi
         )
     end
 
@@ -116,7 +136,7 @@ elseif model_type == :SMA
                 );
                 ylim = (-1, 1),
                 prefix = latexstring("\\Psi_{$j,t}^{($s)}"),
-                true_phi = Phi
+                #true_phi = Phi
             )
         end
 
@@ -270,3 +290,133 @@ elseif model_type == :SARMA
     end
 
 end
+
+
+# ==========================================================
+# MEASUREMENT VOLATILITY σ_{e,t}
+# ==========================================================
+
+if obs_var_type in (:SV, :SVDSP)
+
+    sd_meas = reshape(
+        SAR_res[3],
+        size(SAR_res[3], 1),
+        1,
+        size(SAR_res[3], 2)
+    )
+
+    sd = 1
+
+    summarize_and_plot_t(
+        sd_meas .* sd ./ sqrt(nPerGroup);
+        ylim = (0, 7.0),
+        prefix = L"\sigma_{e,t}",
+        #true_phi = true_sd
+        #xindex = time_group,
+        #xticks = nothing
+    )
+
+elseif obs_var_type == :static
+
+    histogram(
+        SAR_res[3],
+        xlabel = L"\sigma_e",
+        title = "Observation standard deviation",
+        legend = false
+    )
+
+end
+
+
+# ==========================================================
+# INITIAL VALUES / PRESAMPLE / MA ERRORS
+# ==========================================================
+
+if model_type == :SAR
+
+    # ------------------------------------------------------
+    # Presample observations
+    # ------------------------------------------------------
+
+    if !SAR_conditional
+
+        # y_mx position depends on observation variance model
+        y_mx_plot =
+            obs_var_type in (:SV, :SVDSP) ?
+            SAR_res[10] :
+            SAR_res[6]
+
+        summarize_and_plot_t(
+            exp.(y_mx_plot .+ x_med);
+            ylim = (2500, 8000),
+            prefix = latexstring("Presample"),
+            true_phi = exp.(x_init),
+            xindex = nothing,
+            xticks = xticks_custom
+        )
+
+    end
+
+
+elseif model_type == :SMA
+
+    # ------------------------------------------------------
+    # Learned MA errors during adaptation
+    # SAR_res[6] = errors_mx
+    # ------------------------------------------------------
+
+    start1 = 200
+    indx   = T
+
+    summarize_and_plot_t(
+        SAR_res[6][start1:indx, :, :];
+        ylim = (-10, 10),
+        prefix = latexstring("Errors"),
+        true_phi = true_errors[start1:indx]
+        #xindex = nothing,
+        #xticks = xticks_custom
+    )
+
+
+elseif model_type == :SARMA
+
+    # ------------------------------------------------------
+    # SARMA learned MA errors
+    # return:
+    # θpost, Hpost, σₑpost, errors_mx, y_mx
+    # ------------------------------------------------------
+
+    start1 = 200
+    indx   = T_all
+
+    summarize_and_plot_t(
+        SAR_res[4][start1:indx, :, :];
+        ylim = (-10, 10),
+        prefix = latexstring("MA\\ Errors"),
+        true_phi = true_errors[start1:indx]
+    )
+
+
+    # ------------------------------------------------------
+    # SARMA AR presample values
+    # SAR_res[5] = y_mx
+    # ------------------------------------------------------
+
+    summarize_and_plot_t(
+        SAR_res[5] .+ x_med;
+        ylim = (-1,20),
+        prefix = latexstring("Presample"),
+        #true_phi = exp.(x_init),
+        xindex = nothing,
+        #xticks = xticks_custom
+    )
+
+end
+
+
+# ==========================================================
+# MU / PHI DIAGNOSTICS
+# ==========================================================
+
+# histogram(SAR_res[5][1, :])
+# histogram(SAR_res[4][3, :])

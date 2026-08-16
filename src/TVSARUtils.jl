@@ -162,11 +162,27 @@ function compute_residuals!(residuals::Vector{Float64},
     return residuals
 end
 
-function compute_noise_SARMA(alpha_sigma_hat, beta_sigma, errors)
+function compute_noise_SARMA_ref(alpha_sigma_hat, beta_sigma, errors)
     # Sample sigma² given beta
     beta_sigma_hat = beta_sigma + 0.5 * sum(errors .^ 2)
     sigma2 = 1 / rand(Gamma(alpha_sigma_hat, 1 / beta_sigma_hat))
     return sqrt(sigma2)
+end
+
+
+function compute_noise_SARMA(alpha_sigma_hat, beta_sigma, errors::AbstractArray)
+    if ndims(errors) == 1
+        beta_sigma_hat = beta_sigma + 0.5 * sum(abs2, errors)
+        sigma2 = 1 / rand(Gamma(alpha_sigma_hat, 1 / beta_sigma_hat))
+         return sqrt(sigma2)
+    elseif ndims(errors) == 2
+        ss = vec(sum(abs2, errors; dims=1))
+        beta_sigma_hat = beta_sigma .+ 0.5 .* ss
+        sigma2 = 1.0 ./ rand.(Gamma.(alpha_sigma_hat, 1.0 ./ beta_sigma_hat))
+        return sigma2
+    else
+        error("errors must be a vector or matrix")
+    end
 end
 
 ### R ARIMA fit

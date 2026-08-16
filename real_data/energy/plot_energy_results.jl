@@ -1,7 +1,12 @@
+# ==========================================================
+# INTERCEPT
+# ==========================================================
+
 using Statistics
 using StatsBase
 using Plots
 using Dates
+using LaTeXStrings
 
 
 default(
@@ -11,175 +16,457 @@ default(
     grid = false
 )
 
-# Number of estimated/grouped states
+# Posterior states: one point per estimated 30-day group
 T_group = size(SAR_res[1], 1)
 
-# Map grouped states to dates across the training sample
-idx_group = round.(Int, range(1, length(timestamp_train), length=T_group))
-time_ind  = timestamp_train[idx_group]
+# Group size used in estimation
+nPerGroup_fit = modelSettings.nPerGroup   # = 720
 
-# Continuous year representation for x-axis
-time_group = year.(time_ind) .+ (month.(time_ind) .- 1) ./ 12
+# Data actually entering the model
+timestamp_model = timestamp[169:end]
 
-# One tick per year
-years = unique(year.(time_ind))
-
-tick_pos = [
-    time_group[findfirst(==(yr), year.(time_ind))]
-    for yr in years
+# Put each posterior state at midpoint of its 30-day estimation block
+idx_group = [
+    (g - 1) * nPerGroup_fit + cld(nPerGroup_fit, 2)
+    for g in 1:T_group
 ]
 
+time_ind = timestamp_model[idx_group]
+
+years = unique(year.(time_ind))
+
 xticks_custom = (
-    tick_pos,
+    [
+        time_ind[findfirst(==(yr), year.(time_ind))]
+        for yr in years
+    ],
     string.(years)
 )
 
 
-summarize_and_plot_t(
-    SAR_res[1][:, 1:1, :] .+ x_med;
-    ylim = (5, 12),
-    prefix = "Intercept",
-    true_phi = nothing,
-    #xindex = time_group,
-    #xticks = xticks_custom
-)
+#############
+nPerGroup=1
+T =size( SAR_res[1][:, 1:1, :])[1]
+#T =length(x)
 
-# ==========================================================
-# 2. REGULAR AR(1)
-# ==========================================================
-
-
-# Number of regular AR coefficients
-p_reg = p1[1]
-
-# Transform REGULAR AR block only
-trans_AR_reg = transform_theta(
-    SAR_res[1][:, startcol:(startcol + p_reg - 1), :],
-    ztrans = ztrans,
-    negative_signs = !SMA
-)
-
-for j in 1:p_reg
-
+if INTERCEPT
     summarize_and_plot_t(
-        trans_AR_reg[:, j:j, :];
-        ylim = (-1, 1),
-        prefix = latexstring("\\phi_{$j,t}"),
-        true_phi = nothing,
-        #xindex = time_group,
-        #xticks = xticks_custom
+        expand_grouped_states(
+            SAR_res[1][:, 1:1, :],
+            nPerGroup,
+            T
+        );
+        ylim = (-0.1, 0.1),
+        prefix = "Intercept",
+        #true_phi = true_intercept,
+        xindex = time_ind,
+        xticks = xticks_custom
     )
-
 end
 
 # ==========================================================
-# Seasonal AR coefficients only
+# AR / MA COEFFICIENTS
 # ==========================================================
 
-nseasonal = length(season) - 1
+if model_type == :SAR
 
-# First column after the regular AR block
-seasonal_startcol = startcol + p1[1]
+    # ======================================================
+    # AR BLOCK
+    # ======================================================
 
-for k in 2:length(season) #k=3
+    # Regular AR coefficients
+    p_reg = p1[1]
 
-    p_seas = p1[k]          # AR order for this seasonal period
-    s      = season[k]      # seasonal period, e.g. 24 or 168
-
-    # Columns belonging to this seasonal AR block
-    cols = seasonal_startcol:(seasonal_startcol + p_seas - 1)
-
-    # Transform THIS seasonal block only
-    trans_AR_seas = transform_theta(
-        SAR_res[1][:, cols, :],
+    trans_AR_reg = transform_theta(
+        SAR_res[1][:, startcol:(startcol + p_reg - 1), :],
         ztrans = ztrans,
-        negative_signs = !SMA
+        negative_signs = true
     )
 
-    # Plot coefficients within this seasonal block
-    for j in 1:p_seas
-
+    for j in 1:p_reg
         summarize_and_plot_t(
-            trans_AR_seas[:, j:j, :];
+            expand_grouped_states(
+                trans_AR_reg[:, j:j, :],
+                nPerGroup,
+                T
+            );
             ylim = (-1, 1),
-            prefix = latexstring("\\Phi_{$j,t}^{($s)}"),
-            true_phi = nothing,
-            #xindex = time_group,
-            #xticks = xticks_custom
+            prefix = latexstring("\\phi_{$j,t}"),
+            #true_phi = phi,
+            xindex = time_ind,
+        xticks = xticks_custom
         )
-
     end
 
-    # Move to start of next seasonal block
-    seasonal_startcol += p_seas
+    # Seasonal AR coefficients
+    seasonal_startcol = startcol + p1[1]
+
+    for k in 2:length(s1)
+
+        p_seas = p1[k]
+        s      = s1[k]
+
+        cols = seasonal_startcol:(seasonal_startcol + p_seas - 1)
+
+        trans_AR_seas = transform_theta(
+            SAR_res[1][:, cols, :],
+            ztrans = ztrans,
+            negative_signs = true
+        )
+
+        for j in 1:p_seas
+            summarize_and_plot_t(
+                expand_grouped_states(
+                    trans_AR_seas[:, j:j, :],
+                    nPerGroup,
+                    T
+                );
+                ylim = (-1, 1),
+                prefix = latexstring("\\Phi_{$j,t}^{($s)}"),
+                #true_phi = Phi,
+                xindex = time_ind,
+                xticks = xticks_custom
+            )
+        end
+
+        seasonal_startcol += p_seas
+    end
+
+    
+elseif model_type == :SMA
+
+    # ======================================================
+    # MA BLOCK
+    # ======================================================
+
+    # Regular MA coefficients
+    p_reg = p2[1]
+
+    trans_MA_reg = transform_theta(
+        SAR_res[1][:, startcol:(startcol + p_reg - 1), :],
+        ztrans = ztrans,
+        negative_signs = false
+    )
+
+    for j in 1:p_reg
+        summarize_and_plot_t(
+            expand_grouped_states(
+                trans_MA_reg[:, j:j, :],
+                nPerGroup,
+                T
+            );
+            ylim = (-1, 1),
+            prefix = latexstring("\\psi_{$j,t}"),
+            #true_phi = phi
+        )
+    end
+
+    # Seasonal MA coefficients
+    seasonal_startcol = startcol + p2[1]
+
+    for k in 2:length(s2)
+
+        p_seas = p2[k]
+        s      = s2[k]
+
+        cols = seasonal_startcol:(seasonal_startcol + p_seas - 1)
+
+        trans_MA_seas = transform_theta(
+            SAR_res[1][:, cols, :],
+            ztrans = ztrans,
+            negative_signs = false
+        )
+
+        for j in 1:p_seas
+            summarize_and_plot_t(
+                expand_grouped_states(
+                    trans_MA_seas[:, j:j, :],
+                    nPerGroup,
+                    T
+                );
+                ylim = (-1, 1),
+                prefix = latexstring("\\Psi_{$j,t}^{($s)}"),
+                #true_phi = Phi
+            )
+        end
+
+        seasonal_startcol += p_seas
+    end
+
+
+elseif model_type == :SARMA
+
+    # ======================================================
+    # AR BLOCK
+    # ======================================================
+
+    ar_startcol = startcol
+
+    # ------------------------------------------------------
+    # Regular AR coefficients
+    # ------------------------------------------------------
+
+    p_reg_ar = p1[1]
+
+    trans_AR_reg = transform_theta(
+        SAR_res[1][
+            :,
+            ar_startcol:(ar_startcol + p_reg_ar - 1),
+            :
+        ],
+        ztrans = ztrans,
+        negative_signs = true
+    )
+
+    for j in 1:p_reg_ar
+        summarize_and_plot_t(
+            expand_grouped_states(
+                trans_AR_reg[:, j:j, :],
+                nPerGroup,
+                T
+            );
+            ylim = (-1, 1),
+            prefix = latexstring("\\phi_{$j,t}")
+            #true_phi = phi_AR
+        )
+    end
+
+
+    # ------------------------------------------------------
+    # Seasonal AR coefficients
+    # ------------------------------------------------------
+
+    seasonal_startcol = ar_startcol + p1[1]
+
+    for k in 2:length(s1)
+
+        p_seas = p1[k]
+        s      = s1[k]
+
+        cols = seasonal_startcol:(seasonal_startcol + p_seas - 1)
+
+        trans_AR_seas = transform_theta(
+            SAR_res[1][:, cols, :],
+            ztrans = ztrans,
+            negative_signs = true
+        )
+
+        for j in 1:p_seas
+            summarize_and_plot_t(
+                expand_grouped_states(
+                    trans_AR_seas[:, j:j, :],
+                    nPerGroup,
+                    T
+                );
+                ylim = (-1, 1),
+                prefix = latexstring("\\Phi_{$j,t}^{($s)}")
+                #true_phi = Phi_AR
+            )
+        end
+
+        seasonal_startcol += p_seas
+    end
+
+
+    # ======================================================
+    # MA BLOCK
+    # ======================================================
+
+    ma_startcol = startcol + sum(p1)
+
+    # ------------------------------------------------------
+    # Regular MA coefficients
+    # ------------------------------------------------------
+
+    p_reg_ma = p2[1]
+
+    trans_MA_reg = transform_theta(
+        SAR_res[1][
+            :,
+            ma_startcol:(ma_startcol + p_reg_ma - 1),
+            :
+        ],
+        ztrans = ztrans,
+        negative_signs = false
+    )
+
+    for j in 1:p_reg_ma
+        summarize_and_plot_t(
+            expand_grouped_states(
+                trans_MA_reg[:, j:j, :],
+                nPerGroup,
+                T
+            );
+            ylim = (-1, 1),
+            prefix = latexstring("\\psi_{$j,t}")
+            #true_phi = psi
+        )
+    end
+
+
+    # ------------------------------------------------------
+    # Seasonal MA coefficients
+    # ------------------------------------------------------
+
+    seasonal_startcol = ma_startcol + p2[1]
+
+    for k in 2:length(s2)
+
+        p_seas = p2[k]
+        s      = s2[k]
+
+        cols = seasonal_startcol:(seasonal_startcol + p_seas - 1)
+
+        trans_MA_seas = transform_theta(
+            SAR_res[1][:, cols, :],
+            ztrans = ztrans,
+            negative_signs = false
+        )
+
+        for j in 1:p_seas
+            summarize_and_plot_t(
+                expand_grouped_states(
+                    trans_MA_seas[:, j:j, :],
+                    nPerGroup,
+                    T
+                );
+                ylim = (-1, 1),
+                prefix = latexstring("\\Psi_{$j,t}^{($s)}")
+                #true_phi = Psi
+            )
+        end
+
+        seasonal_startcol += p_seas
+    end
+
 end
+
 
 # ==========================================================
 # MEASUREMENT VOLATILITY σ_{e,t}
 # ==========================================================
 
-if SV||SVDSP
+if obs_var_type in (:SV, :SVDSP)
 
-    
-sd_meas = reshape(
-    SAR_res[3],
-    size(SAR_res[3],1),
-    1,
-    size(SAR_res[3],2)
-)
+    sd_meas = reshape(
+        SAR_res[3],
+        size(SAR_res[3], 1),
+        1,
+        size(SAR_res[3], 2)
+    )
 
-sd=1
-summarize_and_plot_t(
-    sd_meas .*sd ;
-    #sd_meas .*sd ./sqrt(nPerGroup);
-    ylim=(0,2.0),
-    #xlim=(0,T/l),
-    prefix=L"\sigma_{e,t}",
-    true_phi=nothing,
-    #xindex = time_group,
-    #xticks = nothing
-)
-else
-    histogram( SAR_res[3])
+    sd = 1
+
+    summarize_and_plot_t(
+        sd_meas .* sd ./ sqrt(nPerGroup);
+        ylim = (0, 7.0),
+        prefix = L"\sigma_{e,t}",
+        #true_phi = true_sd
+        #xindex = time_group,
+        #xticks = nothing
+    )
+
+elseif obs_var_type == :static
+
+    histogram(
+        SAR_res[3],
+        xlabel = L"\sigma_e",
+        title = "Observation standard deviation",
+        legend = false
+    )
+
 end
 
 
-
- #θpost, Hpost, σₑpost, ϕpost, μpost, y_mx, static_state_var, cond_mean_post, intercept_true
-
 # ==========================================================
-# INITIAL PRESAMPLE
+# INITIAL VALUES / PRESAMPLE / MA ERRORS
 # ==========================================================
 
-if SAR
+if model_type == :SAR
 
-#return θpost, Hpost, σₑpost, ϕpost, μpost, μ̃post, ϕ̃post, h̃post, σ̄²ₙpost, y_mx, static_state_var, intercept_true
-    summarize_and_plot_t(
-        exp.(SAR_res[6].+ x_med);
-        ylim = (2500, 8000),
-        prefix = latexstring("Presample"),
-        true_phi = exp.(x_init),
-        xindex = nothing,
-        xticks = xticks_custom
-    )
-elseif SMA
+    # ------------------------------------------------------
+    # Presample observations
+    # ------------------------------------------------------
+
+    if !SAR_conditional
+
+        # y_mx position depends on observation variance model
+        y_mx_plot =
+            obs_var_type in (:SV, :SVDSP) ?
+            SAR_res[10] :
+            SAR_res[6]
+
+        summarize_and_plot_t(
+            exp.(y_mx_plot .+ x_med);
+            ylim = (2500, 8000),
+            prefix = latexstring("Presample"),
+            true_phi = exp.(x_init),
+            xindex = nothing,
+            xticks = xticks_custom
+        )
+
+    end
+
+
+elseif model_type == :SMA
+
+    # ------------------------------------------------------
+    # Learned MA errors during adaptation
+    # SAR_res[6] = errors_mx
+    # ------------------------------------------------------
+
+    start1 = 200
+    indx   = T
 
     summarize_and_plot_t(
-        SAR_res[6][200:500,:,:];
-        ylim = (-1,4),
-        prefix = latexstring("Presample"),
-        true_phi = nothing,
+        SAR_res[6][start1:indx, :, :];
+        ylim = (-10, 10),
+        prefix = latexstring("Errors"),
+        true_phi = true_errors[start1:indx]
         #xindex = nothing,
+        #xticks = xticks_custom
+    )
+
+
+elseif model_type == :SARMA
+
+    # ------------------------------------------------------
+    # SARMA learned MA errors
+    # return:
+    # θpost, Hpost, σₑpost, errors_mx, y_mx
+    # ------------------------------------------------------
+
+    start1 = 200
+    indx   = T_all
+
+    summarize_and_plot_t(
+        SAR_res[4][start1:indx, :, :];
+        ylim = (-10, 10),
+        prefix = latexstring("MA\\ Errors"),
+        true_phi = true_errors[start1:indx]
+    )
+
+
+    # ------------------------------------------------------
+    # SARMA AR presample values
+    # SAR_res[5] = y_mx
+    # ------------------------------------------------------
+
+    summarize_and_plot_t(
+        SAR_res[5] .+ x_med;
+        ylim = (-1,20),
+        prefix = latexstring("Presample"),
+        #true_phi = exp.(x_init),
+        xindex = nothing,
         #xticks = xticks_custom
     )
 
 end
 
+
 # ==========================================================
-# MU PRESAMPLE
+# MU / PHI DIAGNOSTICS
 # ==========================================================
 
-#histogram(SAR_res[5][1,:])
-#histogram(SAR_res[4][3,:])
-
-
+# histogram(SAR_res[5][1, :])
+# histogram(SAR_res[4][3, :])
