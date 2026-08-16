@@ -90,7 +90,7 @@ if model_type == :SAR
                 nPerGroup,
                 T
             );
-            ylim = (-1, 1),
+            ylim = (-2, 2),
             prefix = latexstring("\\phi_{$j,t}"),
             #true_phi = phi,
             xindex = time_ind,

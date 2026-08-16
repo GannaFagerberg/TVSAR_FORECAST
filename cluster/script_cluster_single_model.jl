@@ -3,11 +3,16 @@
 # Expanding-Window Forecast Experiment
 ############################################################
 
+### julia "C:\Users\Anna Fagerberg\JuliaPackages\TVSAR_FORECAST\cluster\script_cluster_single_model.jl"
+
 using Pkg
 
 # If script is e.g.
 # TVSAR_FORECAST/experiments/electricity/expanding_window.jl
-Pkg.activate(abspath(joinpath(@__DIR__, "..", "..")))
+#Pkg.activate(abspath(joinpath(@__DIR__, "..")))
+Pkg.activate(
+    raw"C:\Users\Anna Fagerberg\JuliaPackages\TVSAR_FORECAST"
+)
 
 using Revise
 using TVSAR_FORECAST
@@ -28,6 +33,22 @@ using JLD2
 #
 # CHANGE THESE FIRST
 ############################################################
+
+
+############################################################
+# RUN OR COLLECT
+############################################################
+
+ACTION =
+    Symbol(
+        get(
+            ENV,
+            "TVSAR_ACTION",
+            "run"
+        )
+    )
+
+@assert ACTION in (:run, :collect)
 
 # ----------------------------------------------------------
 # Mini run / full run
@@ -142,7 +163,7 @@ nPerGroup = 24 * 30
 # ----------------------------------------------------------
 
 season = s1 = s2 = [1, 24, 24*7]
-p      = p1 = p2 = [2, 2, 2]
+p      = p1 = p2 = [1, 1, 1]
 
 pFit = sum(p1)
 
@@ -171,7 +192,6 @@ p_threshold      = 0.99
 
 iterated = false
 num_iters = iterated ? 5 : 1
-
 kf_method = :iekf
 
 
@@ -192,7 +212,6 @@ df = CSV.read(
 
 # Ensure chronological ordering
 sort!(df, :datetime)
-
 dates = df.datetime
 data  = df.demand_VIC
 
@@ -249,6 +268,7 @@ println()
 ############################################################
 # 5. SLURM / LOCAL EXECUTION
 ############################################################
+
 
 on_slurm =
     haskey(ENV, "SLURM_ARRAY_TASK_ID")
@@ -321,6 +341,25 @@ resultsFolder = joinpath(
 mkpath(resultsFolder)
 
 
+
+
+############################################################
+# COLLECT MODE
+############################################################
+
+if ACTION == :collect
+
+    collect_results(
+        resultsFolder,
+        nOrigins,
+        forecastHorizons
+    )
+
+    exit()
+
+end
+
+
 ############################################################
 # 7. EXPANDING-WINDOW LOOP
 ############################################################
@@ -338,58 +377,36 @@ for origin_id in origins_to_run
     # 7.1 Expanding training sample
     # ========================================================
 
-    test_start_idx =
-        origin_idx[origin_id]
+    test_start_idx = origin_idx[origin_id]
 
-    train_end_idx =
-        test_start_idx - 1
+    train_end_idx = test_start_idx - 1
 
 
     # Fixed beginning -> expanding end
-    train_start_idx =
-        findfirst(
-            ==(DateTime(2001, 1, 9, 2)),
-            dates
-        )
+    train_start_idx =findfirst(==(DateTime(2001, 1, 9, 2)),dates)
 
-    isnothing(train_start_idx) &&
-        error("Training start date not found.")
+    isnothing(train_start_idx) && error("Training start date not found.")
 
+   data_train = data[train_start_idx:train_end_idx]
 
-    data_train =
-        data[
-            train_start_idx:
-            train_end_idx
-        ]
-
-    timestamp_train =
-        dates[
-            train_start_idx:
-            train_end_idx
-        ]
-
+    timestamp_train =dates[train_start_idx:train_end_idx]
 
     # ========================================================
     # 7.2 Test sample
     # ========================================================
 
-    test_idx =
-        test_start_idx:
-        (test_start_idx + maxHorizon - 1)
+    test_idx =test_start_idx:(test_start_idx + maxHorizon - 1)
 
-    y_test_raw =
-        data[test_idx]
+    y_test_raw =data[test_idx]
 
-    timestamp_test =
-        dates[test_idx]
+    timestamp_test =dates[test_idx]
 
 
     # ========================================================
     # 7.3 Transformation
     # ========================================================
 
-    xlog_train =
-        log.(data_train)
+    xlog_train =log.(data_train)
 
     # Same centering rule for every expanding-window fit.
     #
@@ -397,51 +414,27 @@ for origin_id in origins_to_run
 
     med_window = 30
 
-    train_mean =
-        median(
-            xlog_train[1:med_window]
-        )
+    train_mean = median(xlog_train[1:med_window])
 
-    x =
-        xlog_train .-
-        train_mean
+    x =xlog_train .-train_mean
 
     # True future observations on SAME scale as model
-    y_test =
-        log.(y_test_raw) .-
-        train_mean
+    y_test =log.(y_test_raw) .-train_mean
 
 
     # ========================================================
     # 7.4 Build SAR regressors
     # ========================================================
 
-    init_y =
-        fill(
-            mean(x[1:50]),
-            p_max[1]
-        )
+    init_y =fill(mean(x[1:50]),p_max[1])
 
-    obs =
-        vcat(
-            init_y,
-            x
-        )
+    obs =vcat(init_y,x)
 
-    activeLags_ar =
-        FindActiveLagsMultiSAR(
-            p1,
-            s1
-        )
+    activeLags_ar =FindActiveLagsMultiSAR(p1,s1)
 
-    activeLags_ma =
-        activeLags_ar
+    activeLags_ma =activeLags_ar
 
-    Y, Z, T =
-        SetupARReg_active(
-            obs,
-            activeLags_ar
-        )
+    Y, Z, T =SetupARReg_active(obs,activeLags_ar)
 
 
     # ========================================================
@@ -457,46 +450,24 @@ for origin_id in origins_to_run
         include_constant = true
     )
 
-    resid_variance =
-        fitted_model[:sigma2]
+    resid_variance =fitted_model[:sigma2]
 
-    σ0 =
-        sqrt(resid_variance)
+    σ0 =sqrt(resid_variance)
 
 
     # ========================================================
     # 7.6 Group observations and regressors
     # ========================================================
 
-    y_g =
-        group_vector(
-            Y,
-            nPerGroup
-        )
+    y_g =group_vector(Y,nPerGroup)
 
-    Cargs =
-        [Z[t, :] for t in 1:T]
+    Cargs =[Z[t, :] for t in 1:T]
 
-    Cargs_g =
-        group_vector_view(
-            Cargs,
-            nPerGroup
-        )
+    Cargs_g =group_vector_view(Cargs,nPerGroup)
 
-    cache_ar =
-        build_sarma_cache(
-            p1,
-            s1,
-            activeLags_ar
-        )
+    cache_ar =build_sarma_cache(p1,s1,activeLags_ar)
 
-    cache_ma =
-        build_sarma_cache(
-            p2,
-            s2,
-            activeLags_ma
-        )
-
+    cache_ma =build_sarma_cache(p2,s2,activeLags_ma)
 
     # ========================================================
     # 7.7 Priors
@@ -505,41 +476,20 @@ for origin_id in origins_to_run
     alpha_sigma = 0.001
     beta_sigma  = 0.001
 
-    alpha_sigma_hat =
-        alpha_sigma +
-        T / 2
-
-
-    var_mat =
-        fill(
-            0.3^2,
-            nLags
-        )
+    alpha_sigma_hat =alpha_sigma +T / 2
+    var_mat =fill( 0.3^2,nLags)
 
     if INTERCEPT
-
-        var_mat[1] =
-            1.0^2
-
+        var_mat[1] =1.0^2
         if intercept_dynamics == :ll
-            var_mat[2] =
-                0.005^2
+            var_mat[2] = 0.005^2
         end
-
     end
 
 
-    Σ₀ =
-        PDMat(
-            Diagonal(
-                var_mat
-            )
-        )
+    Σ₀ =PDMat(Diagonal( var_mat))
 
-    μ₀ =
-        zeros(
-            nLags
-        )
+    μ₀ =zeros(nLags)
 
 
     priorSettings = (
@@ -846,12 +796,8 @@ for origin_id in origins_to_run
 
     zₜall_orig =
         reverse(
-            x[
-                end - p_max[1] + 1:
-                end
-            ]
+            x[end - p_max[1] + 1:end]
         )
-
 
     # ========================================================
     # 7.14 Forecast
@@ -916,12 +862,8 @@ for origin_id in origins_to_run
     # 7.15 Store horizon-specific scores
     # ========================================================
 
-    LPSs[origin_id, :] .=
-        LPS
-
-    MAEs[origin_id, :] .=
-        AE
-
+    LPSs[origin_id, :] .= LPS
+    MAEs[origin_id, :] .= AE
 
     println(
         "Forecast time: ",
@@ -950,15 +892,31 @@ for origin_id in origins_to_run
     # each worker writes a different file.
     # ========================================================
 
+    ########################################################
+    # Save this origin
+    ########################################################
+
     origin_file =
         joinpath(
             resultsFolder,
             "origin_$(lpad(origin_id, 4, '0')).jld2"
         )
 
+
+    # Posterior predictive median on model scale
+    medianPred =
+        vec(
+            median(
+                yPred,
+                dims = 2
+            )
+        )
+
+
     JLD2.save(
         origin_file,
         Dict(
+
             "origin_id" =>
                 origin_id,
 
@@ -968,20 +926,75 @@ for origin_id in origins_to_run
             "forecastHorizons" =>
                 forecastHorizons,
 
+
+            # ==============================================
+            # Forecasts
+            # ==============================================
+
+            # All posterior predictive draws
+            # dimensions:
+            # maxHorizon × number of predictive draws
+            "yPred" =>
+                yPred,
+
+            # Posterior predictive median
+            "medianPred" =>
+                medianPred,
+
+
+            # ==============================================
+            # Actual observations
+            # ==============================================
+
+            # Actual electricity demand
+            "y_test_raw" =>
+                y_test_raw,
+
+            # Actual observations on model scale:
+            # log(y) - train_mean
+            "y_test" =>
+                y_test,
+
+            # Dates/times corresponding to test observations
+            "timestamp_test" =>
+                timestamp_test,
+
+
+            # ==============================================
+            # Forecast evaluation
+            # ==============================================
+
             "LPS" =>
                 LPS,
 
-            "MAE" =>
+            # This is AE for this particular origin,
+            # not yet MAE across origins
+            "AE" =>
                 AE,
+
+
+            # ==============================================
+            # Transformation
+            # ==============================================
 
             "train_mean" =>
                 train_mean,
+
+
+            # ==============================================
+            # Timing
+            # ==============================================
 
             "elapsed_fit" =>
                 elapsed_fit[origin_id],
 
             "elapsed_forecast" =>
                 elapsed_forecast[origin_id],
+
+
+            # ==============================================
+            # Model information
+            # ==============================================
 
             "p" =>
                 p,
@@ -997,49 +1010,221 @@ for origin_id in origins_to_run
         )
     )
 
-    println(
-        "Saved: ",
-        origin_file
-    )
-
-end
-
-
 ############################################################
 # 8. LOCAL SUMMARY
 ############################################################
+############################################################
+# 8. COLLECT RESULTS ACROSS ALL ORIGINS
+############################################################
 
-if !on_slurm && length(origins_to_run) > 1
+function collect_results(
+    resultsFolder,
+    nOrigins,
+    forecastHorizons
+)
 
-    ids =
-        origins_to_run
+    nH = length(forecastHorizons)
+
+    # One row per forecast origin,
+    # one column per forecast horizon
+    LPSs = fill(NaN, nOrigins, nH)
+    AEs  = fill(NaN, nOrigins, nH)
+
+    elapsed_fit =
+        fill(NaN, nOrigins)
+
+    elapsed_forecast =
+        fill(NaN, nOrigins)
+
+    origin_dates_saved =
+        Vector{Union{Missing,DateTime}}(
+            missing,
+            nOrigins
+        )
+
+
+    ########################################################
+    # Read every origin file
+    ########################################################
+
+    completed = Int[]
+
+    for origin_id in 1:nOrigins
+
+        origin_file =
+            joinpath(
+                resultsFolder,
+                "origin_$(lpad(origin_id, 4, '0')).jld2"
+            )
+
+
+        if !isfile(origin_file)
+
+            @warn(
+                "Missing result file",
+                origin_id = origin_id,
+                file = origin_file
+            )
+
+            continue
+        end
+
+
+        d = JLD2.load(origin_file)
+
+
+        ####################################################
+        # Check that horizons agree
+        ####################################################
+
+        stored_horizons =
+            Int.(d["forecastHorizons"])
+
+        stored_horizons == forecastHorizons ||
+            error(
+                "Forecast horizons in $origin_file do not match."
+            )
+
+
+        ####################################################
+        # Store scores
+        ####################################################
+
+        LPSs[origin_id, :] .=
+            d["LPS"]
+
+
+        # If you changed the saved key to "AE"
+        if haskey(d, "AE")
+
+            AEs[origin_id, :] .=
+                d["AE"]
+
+        # Allows your older files with key "MAE"
+        elseif haskey(d, "MAE")
+
+            AEs[origin_id, :] .=
+                d["MAE"]
+
+        else
+
+            error(
+                "Neither AE nor MAE found in $origin_file"
+            )
+
+        end
+
+
+        ####################################################
+        # Other saved information
+        ####################################################
+
+        origin_dates_saved[origin_id] =
+            d["origin_date"]
+
+        elapsed_fit[origin_id] =
+            d["elapsed_fit"]
+
+        elapsed_forecast[origin_id] =
+            d["elapsed_forecast"]
+
+
+        push!(
+            completed,
+            origin_id
+        )
+
+    end
+
+
+    ########################################################
+    # Check that something was found
+    ########################################################
+
+    isempty(completed) &&
+        error(
+            "No completed origin files found in $resultsFolder"
+        )
+
+
+    println()
+    println(
+        "Completed origins: ",
+        length(completed),
+        " / ",
+        nOrigins
+    )
+
+    println(
+        "Completed IDs: ",
+        completed
+    )
+
+
+    ########################################################
+    # Horizon-specific summary
+    #
+    # Average ACROSS forecast origins
+    ########################################################
+
+    LPS_mean =
+        vec(
+            mean(
+                LPSs[completed, :],
+                dims = 1
+            )
+        )
+
 
     MAE_mean =
         vec(
             mean(
-                MAEs[ids, :],
+                AEs[completed, :],
                 dims = 1
             )
         )
+
 
     RMSE =
         sqrt.(
             vec(
                 mean(
-                    MAEs[ids, :] .^ 2,
+                    AEs[completed, :] .^ 2,
                     dims = 1
                 )
             )
         )
 
-    LPS_mean =
-        vec(
+
+    ########################################################
+    # One overall number for this model
+    #
+    # Average across BOTH origins and horizons
+    ########################################################
+
+    overall_LPS =
+        mean(
+            LPSs[completed, :]
+        )
+
+
+    overall_MAE =
+        mean(
+            AEs[completed, :]
+        )
+
+
+    overall_RMSE =
+        sqrt(
             mean(
-                LPSs[ids, :],
-                dims = 1
+                AEs[completed, :] .^ 2
             )
         )
 
+
+    ########################################################
+    # Horizon-specific table
+    ########################################################
 
     summary =
         DataFrame(
@@ -1056,37 +1241,101 @@ if !on_slurm && length(origins_to_run) > 1
                 RMSE
         )
 
+
     println()
+    println("============================================")
+    println("FORECAST SUMMARY")
+    println("============================================")
     println(summary)
 
+    println()
+    println("Overall mean LPS : ", overall_LPS)
+    println("Overall MAE      : ", overall_MAE)
+    println("Overall RMSE     : ", overall_RMSE)
+    println("============================================")
+    println()
 
-    JLD2.save(
+
+    ########################################################
+    # Save horizon-specific summary as CSV
+    ########################################################
+
+    CSV.write(
         joinpath(
             resultsFolder,
-            "local_summary.jld2"
+            "forecast_summary.csv"
         ),
-        Dict(
-            "origin_dates" =>
-                origin_dates[ids],
-
-            "forecastHorizons" =>
-                forecastHorizons,
-
-            "LPSs" =>
-                LPSs[ids, :],
-
-            "MAEs" =>
-                MAEs[ids, :],
-
-            "LPS_mean" =>
-                LPS_mean,
-
-            "MAE_mean" =>
-                MAE_mean,
-
-            "RMSE" =>
-                RMSE
-        )
+        summary
     )
 
-end
+
+    ########################################################
+    # Save everything
+    ########################################################
+
+        JLD2.save(
+            joinpath(
+                resultsFolder,
+                "forecast_summary.jld2"
+            ),
+            Dict(
+
+                "completed_origins" =>
+                    completed,
+
+                "origin_dates" =>
+                    origin_dates_saved[completed],
+
+                "forecastHorizons" =>
+                    forecastHorizons,
+
+                # Full origin × horizon matrices
+                "LPSs" =>
+                    LPSs[completed, :],
+
+                "AEs" =>
+                    AEs[completed, :],
+
+                # Horizon-specific averages
+                "LPS_mean" =>
+                    LPS_mean,
+
+                "MAE_mean" =>
+                    MAE_mean,
+
+                "RMSE" =>
+                    RMSE,
+
+
+                # One number for model comparison
+                "overall_LPS" =>
+                    overall_LPS,
+
+                "overall_MAE" =>
+                    overall_MAE,
+
+                "overall_RMSE" =>
+                    overall_RMSE,
+
+
+                # Timing
+                "elapsed_fit" =>
+                    elapsed_fit[completed],
+
+                "elapsed_forecast" =>
+                    elapsed_forecast[completed]
+            )
+        )
+
+
+        return (
+            summary      = summary,
+            LPSs         = LPSs[completed, :],
+            AEs          = AEs[completed, :],
+            origin_dates = origin_dates_saved[completed],
+            overall_LPS  = overall_LPS,
+            overall_MAE  = overall_MAE,
+            overall_RMSE = overall_RMSE
+        )
+
+    end

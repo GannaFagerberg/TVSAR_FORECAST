@@ -284,7 +284,7 @@ function build_AR_init_opt_orig!(
     rng::AbstractRNG = Random.default_rng(),
     fourier_c = nothing,
     static_int = nothing,
-    presample_method::Symbol = :posterior,
+    presample_method::Symbol = :posterior,#:recursive
 )
 
     maxlag = maximum(activeLags_ar)
