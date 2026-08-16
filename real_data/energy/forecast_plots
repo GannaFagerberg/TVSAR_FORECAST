@@ -2,7 +2,7 @@ H_freeze    = false
 STATE_fixed = false
 use_fourier = false
 
-g_new  = nPerGroup
+g_new  = 1
 T      = length(y_g)
 season = s1
 

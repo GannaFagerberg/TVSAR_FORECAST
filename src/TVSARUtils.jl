@@ -230,3 +230,12 @@ function expand_grouped_states(states::AbstractArray, k::Int, original_length::I
         throw(ArgumentError("expand_grouped_states only supports 1D, 2D, or 3D arrays"))
     end
 end
+
+
+function select_period(df, start_date, end_date)
+
+    idx = (df.datetime .>= start_date) .&
+          (df.datetime .<= end_date)
+
+    return df[idx, :]
+end

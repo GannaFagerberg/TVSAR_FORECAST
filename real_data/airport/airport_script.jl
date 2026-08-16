@@ -2,6 +2,18 @@
 # Model Type and Configuration
 ############################################################
 
+cd("C:/Users/Anna Fagerberg/Desktop/PROJECTS IN JULIA/DATA/real data")
+airport_data = CSV.read("log_airport.csv", DataFrame) 
+#time_data = CSV.read("airport2.csv", DataFrame)
+
+data = airport_data[:,1]
+time_ind = time_data[:,1]
+#plot(data)
+x_med = median(data[1:30])
+#sd = std(data)
+#sd = 1
+x_data = (data .-x_med)./sd
+
 # ----------------------------------------------------------
 # Deterministic Fourier terms
 # ----------------------------------------------------------
@@ -19,27 +31,27 @@
 # Data
 ############################################################
 
-x = x_detrend
-#x = x_data
+#x = x_detrend
+x = x_data
 plot(x)
 # T / (30 * 24)
 
 ############################################################
 # Model Specification
 ############################################################
-#model_type = :SMA
-# model_type = :SAR
-model_type = :SARMA
+model_type = :SMA
+#model_type  = :SAR
+#model_type = :SARMA
 
 SAR_conditional = model_type == :SAR ? false : false
 
 # Variance specification
-obs_var_type   = :static     # :SV, :SVDSP, :static
+obs_var_type   = :SVDSP     # :SV, :SVDSP, :static
 state_var_type = :DSP       # :DSP, :static
 
 INTERCEPT = true
-nPerGroup = 24 * 30
-#nPerGroup = 1
+#PerGroup = 24 * 30
+nPerGroup = 1
 
 use_fourier = false
 
@@ -79,7 +91,7 @@ end
 if model_type == :SMA
 
     season = [1, 12]
-    p      = [1, 1]
+    p      = [1, 5]
 
     s1 = season
     p1 = p
@@ -92,19 +104,19 @@ if model_type == :SMA
 
 elseif model_type == :SARMA
 
-    s1 = [1, 24, 24*7]
-    s2 = [1, 24, 24*7]
+    s1 = [1, 12]
+    s2 = [1, 12]
 
-    p1 = [1, 1 ,1]
-    p2 = [1, 1 ,1]
+    p1 = [1, 1]
+    p2 = [1, 1]
 
     pFit = sum(p1) + sum(p2)
 
 
 elseif model_type == :SAR
 
-    season = [1, 24, 7*24]
-    p      = [2, 1, 2]
+    season = [1, 12]
+    p      = [1, 2]
 
     #season = [1, 12]
     #p      = [1, 1]
@@ -411,8 +423,8 @@ else
 end
 
 ### Settings
-nBurn = 2000
-nIter = 2000
+nBurn = 3000
+nIter = 5000
 
 ###############
 # FILTER TYPE
@@ -499,7 +511,10 @@ algoSettings = (
             SAR_conditional = SAR_conditional,
 
             obs_var_type   = obs_var_type ,     # :SV, :SVDSP, :static
-            state_var_type = state_var_type     # :DSP, :static
+            state_var_type = state_var_type ,    # :DSP, :static
+
+            #ma_regressor_type = :current # :current
+            ma_regressor_type = :median_freeze
             
             )
 

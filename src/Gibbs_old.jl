@@ -76,6 +76,7 @@ function IEKFWorkspace(n::Int, ny::Int, nreg::Int, pfit::Int; T=Float64)
 end
 
 
+### Gibbs
 function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSettings)
 
     # ==================================================
@@ -97,8 +98,8 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
     # Algorithm settings
     # ==================================================
     nBurn, nIter, INTERCEPT, resid_label,
-    method_label, model_type,
-    SAR_conditional, obs_var_type , state_var_type = algoSettings 
+    method_label, SARMA, SAR, SMA,
+    SAR_conditional, SV, SVDSP, DSP_label = algoSettings 
 
     # ==================================================
     # Model settings
@@ -223,8 +224,8 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
     # ==================================================
     θpost  = zeros(T, nLags,  nThin)
 
-    if obs_var_type in (:SV, :SVDSP)
-        σₑpost = zeros(T_all, nThin)
+    if SVDSP || SV
+        σₑpost = zeros(T,  nThin)
     else
         σₑpost = zeros(nThin)
     end
@@ -245,306 +246,195 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
     σₑ² = similar(σₑ)
     Dᵩ = BandedMatrix(-1 => repeat([-ϕ[1]], T-1),0 => Ones(T))
   
-    # ==================================================
+     # ==================================================
     # Observation equation setup
     # ==================================================
-
-    if model_type == :SMA
-
+    
+    if SMA
         σy = nothing
         σ0 = σₑ[1]
-
-        ψ_mat      = Matrix{Float64}(undef, total_params, T)
+        ψ_mat = Matrix{Float64}(undef, total_params, T)
         ψ_expanded = Matrix{Float64}(undef, total_params, T_all)
-
-        residuals = fill(0.0, T_all)
+        #residuals    = fill(0.0, T_all + p_max[2])
+        residuals    = fill(0.0, T_all)
         errors    = fill(0.0, T_all + p_max[2])
-
+        
         freeze_iter = 1000
-        errors_med  = zeros(T_all + p_max[2], freeze_iter)
-        errors_mx   = zeros(T_all + p_max[2], 1, freeze_iter)
-        Z_fixed     = nothing
-
-
-    elseif model_type == :SARMA
-
-        σ0 = σₑ[1]
+        errors_med = zeros(T_all + p_max[2],  freeze_iter)
+        errors_mx = zeros(T_all + p_max[2], 1, freeze_iter)
+        Z_fixed = nothing
+       
+    elseif SARMA
+         σ0 = σₑ[1]
         σy = σₑ[1]^2
-
+        
         Z_ar = Z[:, 1:length(activeLags_ar)]
         Z_ma = Z[:, length(activeLags_ar)+1:total_params]
-
         σy = var(@view Y[1:min(end, 30)])
+        
+        errors    = fill(0.0, T_all + p_max[2])
+        #errors_mx = zeros(T_all + p_max[2], 1,  nThin)
+        #errors_med = zeros(T_all + p_max[2],  nIter)
+        #residuals    = fill(0.0, T_all + p_max[2])
+        y_mx      = zeros(p_max[1], 1,  nThin)
 
-        errors = fill(0.0, T_all + p_max[2])
-        y_mx   = zeros(p_max[1], 1, nThin)
-
-        ϕ_mat      = Matrix{Float64}(undef, length(activeLags_ar), T)
+        ϕ_mat = Matrix{Float64}(undef, length(activeLags_ar), T)
         ϕ_expanded = Matrix{Float64}(undef, length(activeLags_ar), T_all)
-
-        ψ_mat      = Matrix{Float64}(undef, length(activeLags_ma), T)
+        ψ_mat = Matrix{Float64}(undef, length(activeLags_ma), T)
         ψ_expanded = Matrix{Float64}(undef, length(activeLags_ma), T_all)
 
-        nθ_ar = sum(p1)
+        nθ_ar = sum(p1) 
         nθ_ma = sum(p2)
-
         ar_cols = startcol : (startcol + nθ_ar - 1)
         ma_cols = (startcol + nθ_ar) : (startcol + nθ_ar + nθ_ma - 1)
 
         freeze_iter = 1000
-        errors_med  = zeros(T_all + p_max[2], freeze_iter)
-        errors_mx   = zeros(T_all + p_max[2], 1, freeze_iter)
-        Z_fixed     = nothing
+        errors_med = zeros(T_all + p_max[2],  freeze_iter)
+        errors_mx = zeros(T_all + p_max[2], 1, freeze_iter)
+        Z_fixed = nothing
 
 
-    elseif model_type == :SAR
-
+    elseif SAR
+        
         σ0 = σₑ[1]
-
+        #σy = σₑ[1]^2
+  
         σy = Statistics.var(@view Y[1:min(end, 30)])
-
-        y_mx      = zeros(p_max[1], 1, nThin)
+        y_mx      = zeros(p_max[1], 1,  nThin)
         residuals = fill(0.0, T_all)
-
-        ϕ_mat      = Matrix{Float64}(undef, total_params, T)
-        ϕ_expanded = Matrix{Float64}(undef, total_params, T_all)
-
-
-    else
-
-        error("model_type must be :SAR, :SMA, or :SARMA")
-
+        ϕ_mat = Matrix{Float64}(undef, total_params, T)
+        ϕ_expanded = Matrix{Float64}(undef, total_params, T_all)  
     end
-
 
     # ==================================================
     # Stochastic volatility buffers
     # ==================================================
-    if obs_var_type in (:SV, :SVDSP)
+    if SVDSP || SV
 
-        pre_length = model_type == :SAR ? 0 : p_max[2]
-
+        pre_length = SAR ? 0 : p_max[2]
+        #||SARMA
         h̄ = fill(m̄₀, T_all + pre_length)
         h̃ = h̄ .- m̄₀
 
-        hstar = zeros((T_all + 1) + pre_length)
-        hstar .= m̄₀
-
+        hstar = zeros((T_all + 1) + pre_length); hstar .= m̄₀
         ξ̄ = ones(T_all + pre_length)
 
         postDistsv = zeros(T_all + pre_length, nMixComp)
-        Ssv        = zeros(Int, T_all + pre_length)
+        Ssv = zeros(Int, T_all + pre_length)
 
+        #errors_mx = zeros(T_all + pre_length, 1, nIter - nBurn)
+    
         # Holders for SV parameters
-        μ̃post   = zeros(T, nThin)
-        ϕ̃post   = zeros(T, nThin)
-        σ̄²ₙpost = zeros(T, nThin)
+        μ̃post = zeros(T,  nThin)
+        ϕ̃post = zeros(T,  nThin)
+        σ̄²ₙpost = zeros(T,  nThin)
+        #h̃post = zeros(T_all + pre_length,  nThin)
+        h̃post = zeros(T_all,  nThin)
 
-        h̃post = zeros(T_all, nThin)
-
-        # Allocate once outside Gibbs loop
+        # allocate once OUTSIDE Gibbs loop
         σₑ_full = Vector{Float64}(undef, T_all)
 
     end
 
-
-    # ==================================================
-    # Static state variance
-    # ==================================================
-
     static_var = fill(0.0, nLags)
-
-    if state_var_type == :static
-        static_var .= exp.(H[1, :])
+    
+    if !DSP_label
+        static_var .= exp.(H[1,:])
     end
-
-
-    # ==================================================
-    # DSP buffers
-    # ==================================================
-
+    
+    ### DSP buffers
     zprev_buf = zeros(T)
     zcurr_buf = zeros(T)
-
     prop_sd_phi = fill(0.05, nLags)
-    acc_phi     = zeros(Int, nLags)
+    acc_phi = zeros(Int, nLags)
 
+    ### ARMA buffers
+    if SAR
 
-    # ==================================================
-    # AR / MA / ARMA buffers
-    # ==================================================
-
-    kl_ar = length(activeLags_ar)
-    kl_ma = length(activeLags_ma)
-
-    if model_type == :SAR
-
-        p = p_max[1]
-
+        p      = p_max[1]
+        #maxlag = maximum(activeLags_ar)
         maxlag = p
         kl     = length(activeLags_ar)
 
-        ws_presample = build_presample_workspace(
-            maxlag,
-            activeLags_ar
-        )
+        ws_presample = build_presample_workspace(maxlag, activeLags_ar)
 
-        group_map = build_group_map(
-            p,
-            nPerGroup
-        )
+        group_map = build_group_map(p, nPerGroup)
 
         int_exp = zeros(Float64, p)
         x0_buf  = zeros(Float64, p)
         m0_buf  = zeros(Float64, p)
 
-        ws = IEKFWorkspace(
-            nLags,
-            nPerGroup,
-            kl,
-            pFit;
-            T = Float64
-        )
+        ws = IEKFWorkspace(nLags, nPerGroup, kl, pFit; T=Float64)
 
+    elseif SMA
 
-    elseif model_type == :SMA
-
-        q         = p_max[2]
+        q      = p_max[2]
         maxlag_ma = maximum(activeLags_ma)
-        kl        = length(activeLags_ma)
+        kl     = length(activeLags_ma)
 
         ws_sma = build_SMA_workspace(q)
 
-        # SMA does not use AR presample buffers
+        # IMPORTANT: SMA does NOT use these
+        # (they belong to AR presample logic)
         int_exp = nothing
         x0_buf  = nothing
         m0_buf  = nothing
 
-        ws = IEKFWorkspace(
-            nLags,
-            nPerGroup,
-            kl,
-            pFit;
-            T = Float64
-        )
+        ws = IEKFWorkspace(nLags, nPerGroup, kl, pFit; T=Float64)
 
-
-    elseif model_type == :SARMA
-
+    elseif SARMA
+   
         maxlag_ma = maximum(activeLags_ma)
-
-        intercept_true = zeros(nThin, T)
-
+        intercept_true = zeros(nThin, T )
         nma = length(ma_cols)
 
         if INTERCEPT
-            nar_inter = length(ar_cols) + 1
-            nar       = length(ar_cols)
+           nar_inter = length(ar_cols)+1
+           nar = length(ar_cols)
         else
-            nar       = length(ar_cols)
+            nar = length(ar_cols)
             nar_inter = nar
         end
 
-
-        # --------------------------------------------------
-        # AR buffers
-        # --------------------------------------------------
-
-        p     = p_max[1]
+        # AR
+        p = p_max[1]
         kl_ar = length(activeLags_ar)
 
-        ws_AR_presample = build_presample_workspace(
-            p,
-            activeLags_ar
-        )
-
-        group_map_ar = build_group_map(
-            p,
-            nPerGroup
-        )
+        ws_AR_presample = build_presample_workspace(p, activeLags_ar)
+        group_map_ar = build_group_map(p, nPerGroup)
 
         int_exp = zeros(Float64, p)
         x0_buf  = zeros(Float64, p)
         m0_buf  = zeros(Float64, p)
 
-        ws_ar = IEKFWorkspace(
-            nar_inter,
-            nPerGroup,
-            kl_ar,
-            nar;
-            T = Float64
-        )
+        ws_ar = IEKFWorkspace(nar_inter, nPerGroup, kl_ar, nar; T=Float64)
 
-
-        # --------------------------------------------------
-        # MA buffers
-        # --------------------------------------------------
-
-        q     = p_max[2]
+        # MA
+        q = p_max[2]
         kl_ma = length(activeLags_ma)
 
         ws_sma = build_SMA_workspace(q)
+        ws_ma = IEKFWorkspace(nma, nPerGroup, kl_ma, nma; T=Float64)
 
-        ws_ma = IEKFWorkspace(
-            nma,
-            nPerGroup,
-            kl_ma,
-            nma;
-            T = Float64
-        )
-
-        # --------------------------------------------------
-        # Full SARMA workspace
-        # --------------------------------------------------
-
-        ws_sarma = IEKFWorkspace(
-            nLags,
-            nPerGroup,
-            kl_ar + kl_ma,
-            pFit;
-            T = Float64
-        )
-
-        # Combined SARMA design matrix
-        Z = similar(
-            Z_ar,
-            size(Z_ar, 1),
-            size(Z_ar, 2) + size(Z_ma, 2)
-        )
-
+        Z = similar(Z_ar, size(Z_ar,1), size(Z_ar,2)+size(Z_ma,2))
+   
     end
 
-
-    # ==================================================
-    # Common buffers
-    # ==================================================
-
     cond_mean_post = zeros(Float64, T_all)
-    residuals      = zeros(Float64, T_all)
+    residuals = zeros(Float64, T_all)
 
-    group_map_T = build_group_map(
-        T_all,
-        nPerGroup
-    )
-
-    # ==================================================
-    # Temporary AR transformation buffers
-    # ==================================================
+    group_map_T = build_group_map(T_all, nPerGroup)
 
     maxp = maximum(p1)
 
     φtmp = zeros(Float64, maxp)
     Ptmp = zeros(Float64, maxp)
     ϕtmp = zeros(Float64, maxp, maxp)
-
-
-    # ==================================================
-    # Buffers for backward sampling
-    # ==================================================
-
+ 
+    ### Buffers for backwards sampling  #
     KG_buf   = zeros(nLags, nLags)
     tmp_vec  = zeros(nLags)
-    tmp_mat  = zeros(nLags, nLags)
+    tmp_mat  = zeros(nLags,nLags)
     tmp_mat2 = zeros(nLags, nLags)
 
     ######
@@ -556,11 +446,8 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
     # ==================================================
     # Draw local level using FFBS
     # ==================================================
-    Σₙ = state_var_type == :DSP ?
-        LogVol2Covs(H) :
-        Vol2Covs(static_var)
-
-    # seems pretty fast and small allocation
+    Σₙ = DSP_label ? LogVol2Covs( H) : Vol2Covs(static_var)
+    # seems pretyy fast and small allocation
 
     # ==================================================
     # Precompute σₑ² in-place (NO allocation)
@@ -574,11 +461,11 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
     Σₑ_g  = group_vector(σₑ², nPerGroup) #500-element Vector{Vector{Float64}}
     #500-element Vector{Vector{Vector{Float64}}}:
 
-    if model_type == :SARMA
+    if SARMA
 
          state = FFBSx_sarma(
             U, y_g, A, B, Cargs, Σₑ_g, Σₙ, μ₀, Σ₀,
-            iterations, α_ukf, β_ukf, κ_ukf, ws_ar, ws_ma, ws_sarma, kl_ar,kl_ma;
+            iterations, α_ukf, β_ukf, κ_ukf, ws_ar, ws_ma;
             resid_check = resid_label,
             mode = method_label,
             startcol = startcol,
@@ -615,26 +502,28 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
     if intercept_dynamics === :ll
         omega = diff(state[:, 2:end], dims = 1)
     else
-        omega = diff(state, dims = 1)  
+        omega = diff(state, dims = 1)
+          if scaled==true
+            σ2_global = mean(getindex.(Σₑ_g, 1))
+            #σ_global  = sqrt(σ2_global)
+            Sdiag = fisher_scaling_diag_gaussian(Z[:,1:2]; σ2=σ2_global, intercept=true)
+            omega./= Sdiag'
+            #omega[:,1] ./= σ_global
+            #omega[:,1] ./= sqrt.([Σₑ_g[t][1] for t in 1:length(Σₑ_g)])
+            #omega ./= Sdiag'
+          end
+        
     end 
 
-    if state_var_type == :DSP
+    if DSP_label
 
-        if nPerGroup == 1
+        #H_prev .= H   # save H before updating
 
-            update_dsp!(
-                omega, S, H, H̃, ξ, ϕ, μ, σ²ₙ,
-                ϕ₀, κ₀, m₀, σ₀, ν₀, ψ₀,
-                mixLogχ²₁, m, v, postDist, Dᵩ;
-                offset = eps(),
-                updateσₙ = updateσₙ,
-                α = α,
-                β = β
-            )
-
+        if nPerGroup==1
+            update_dsp!(omega, S, H, H̃, ξ, ϕ, μ, σ²ₙ,ϕ₀, κ₀, m₀, σ₀, ν₀, ψ₀,mixLogχ²₁, m, v, postDist, Dᵩ;offset = eps(),updateσₙ = updateσₙ,α = α,β = β)
         else
 
-            update_dsp_grouped!(
+        update_dsp_grouped!(
                 omega, S, H, H̃, ξ, ϕ, μ, σ²ₙ,
                 ϕ₀, κ₀, m₀, σ₀, ν₀, ψ₀,
                 mixLogχ²₁, m, v, postDist, Dᵩ;
@@ -646,127 +535,75 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
                 updateσₙ = updateσₙ,
                 α = α,
                 β = β,
-                INTERCEPT = INTERCEPT
+                INTERCEPT=INTERCEPT
             )
 
         end
-
     else
-
-        static_var .= compute_noise_SARMA_multi(
-            alpha_sigma_hat,
-            beta_sigma,
-            omega
-        )
-
+      static_var .= compute_noise_SARMA_multi(alpha_sigma_hat, beta_sigma, omega)
     end
 
-    # ============================================================
-    # Infer errors / construct regressors
-    # model_type ∈ (:SAR, :SMA, :SARMA)
-    # ============================================================
-
-    if model_type == :SARMA
-
-        # ========================================================
-        # SARMA
-        # ========================================================
-
-        # --------------------------------------------------------
-        # Expand AR coefficients
-        # --------------------------------------------------------
-
+    ## Infer the errors given AR/MA part
+    ## Infer the errors given AR/MA part
+    if SARMA
+    
         @inbounds Threads.@threads for t in 1:T
-            row    = view(state, t+1, ar_cols)
-            out_ar = view(ϕ_mat, :, t)
-
-            MultiSARMAtoReg_cached!(
-                out_ar,
-                row,
-                cache_ar;
-                ztrans = ztrans,
-                negative_signs = true
-            )
+                row = view(state, t+1, ar_cols)
+                out_ar = view(ϕ_mat, :, t)
+                MultiSARMAtoReg_cached!(out_ar, row, cache_ar; ztrans=ztrans, negative_signs=true)
+                #MultiSARMAtoReg!(out, row, p1, s1, activeLags_ar;ztrans=ztrans, negative_signs=true)
+        end
+        expand_grouped_states_fast!(ϕ_expanded, ϕ_mat, nPerGroup, T_all)
+    
+        ## Compute expanded SMA coeffs. 
+        @inbounds Threads.@threads for t in 1:T
+                row = view(state, t+1, ma_cols)
+                out_ma = view(ψ_mat, :, t)
+                MultiSARMAtoReg_cached!(out_ma, row, cache_ma;ztrans=ztrans, negative_signs=false)
+                #MultiSARMAtoReg!(out, row, p2, s2, activeLags_ma;ztrans=ztrans, negative_signs=false)
         end
 
-        expand_grouped_states_fast!(
-            ϕ_expanded,
-            ϕ_mat,
-            nPerGroup,
-            T_all
-        )
-
-        ϕ_sum = vec(sum(ϕ_expanded; dims=1))
-
-
-        # --------------------------------------------------------
-        # Expand MA coefficients
-        # --------------------------------------------------------
-
-        @inbounds Threads.@threads for t in 1:T
-            row    = view(state, t+1, ma_cols)
-            out_ma = view(ψ_mat, :, t)
-
-            MultiSARMAtoReg_cached!(
-                out_ma,
-                row,
-                cache_ma;
-                ztrans = ztrans,
-                negative_signs = false
-            )
-        end
-
-        expand_grouped_states_fast!(
-            ψ_expanded,
-            ψ_mat,
-            nPerGroup,
-            T_all
-        )
-
-
-        # --------------------------------------------------------
-        # AR presample stage
-        # --------------------------------------------------------
-
+        expand_grouped_states_fast!(ψ_expanded, ψ_mat, nPerGroup, T_all)
+        ϕ_sum = vec(sum(ϕ_expanded; dims=1))   # length T_all
+    
+        # ---------- AR stage ----------
         ma_sums = Vector{Float64}(undef, p_max[1])
         obs_ar  = Vector{Float64}(undef, p_max[1])
 
         @inbounds for t in 1:p_max[1]
-
-            ma_sums[t] = dot(
-                @view(Z_ma[t, :]),
-                @view(ψ_expanded[:, t])
-            )
-
-            obs_ar[t] = Y[t] - ma_sums[t]
+            ma_sums[t] = dot(@view(Z_ma[t, :]), @view(ψ_expanded[:, t]))
+            obs_ar[t]  = Y[t] - ma_sums[t]
         end
 
         init_y, Z_ar = build_AR_init_opt_orig!(
-            x0_buf,
-            int_exp,
-            m0_buf,
-            group_map_ar,
-            ws_AR_presample,
-            obs_ar,
-            state,
-            ϕ_expanded,
-            activeLags_ar,
-            p1,
-            s1,
-            p_max,
-            σₑ²,
-            σy;
-            INTERCEPT = INTERCEPT,
-            cond_sma  = ma_sums[1],
-            Z         = Z_ar,
-            l         = nPerGroup
+                x0_buf,
+                int_exp,
+                m0_buf,
+                group_map_ar,
+                ws_AR_presample,
+                obs_ar,
+                state,
+                ϕ_expanded,
+                activeLags_ar,
+                p1, s1,
+                p_max,
+                σₑ²,
+                σy;
+                INTERCEPT = INTERCEPT,
+                cond_sma  = ma_sums[1],
+                Z = Z_ar,
+                l = nPerGroup
         )
 
+        # ---------- MA stage ----------
+        obs_ma = copy(Y)
+        @inbounds for t in 1:T_all# t=1
+            obs_ma[t] -= dot(@view(Z_ar[t, :]), @view(ϕ_expanded[:, t]))
+        end
 
-        # --------------------------------------------------------
-        # Learn MA regressors, then freeze
-        # --------------------------------------------------------
-
+        # ---------------------------------------------------------
+        # Learn MA error regressors, then freeze them
+        # ---------------------------------------------------------
         if i <= freeze_iter
 
             errors_reg = build_MA_errors_banded(
@@ -789,57 +626,46 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
                 use_σ0_for_presample = true
             )
 
-            # Store current reconstructed MA-error path
+            # Store current reconstructed error path
             errors_med[:, i] .= errors_reg
 
-            # Running pointwise median
+            # Running pointwise median error path
             med_error = dropdims(
-                median(
-                    @view(errors_med[:, 1:i]),
-                    dims = 2
-                );
-                dims = 2
+                median(@view(errors_med[:, 1:i]), dims=2);
+                dims=2
             )
 
-            # MA regressors from median error path
+            # MA regressors from median error history
             _, Z_MA, _ = SetupARReg_active(
                 med_error,
                 activeLags_ma
             )
 
+            # Check AR/MA time alignment
             @assert size(Z_MA, 1) == size(Z_ar, 1)
 
-            # Complete SARMA design
-            n_ar = size(Z_ar, 2)
+            # Construct complete SARMA design
+            @views Z[:, 1:size(Z_ar, 2)] .= Z_ar
+            @views Z[:, size(Z_ar, 2)+1:end] .= Z_MA
 
-            @views Z[:, 1:n_ar]     .= Z_ar
-            @views Z[:, n_ar+1:end] .= Z_MA
-
-            # Keep current MA design for next AR presample step
-            Z_ma .= Z_MA
-
-            # Freeze MA design
+            # Freeze only the MA part
             if i == freeze_iter
                 Z_fixed = copy(Z_MA)
             end
 
-            # Current reconstructed error realization
+            # Current error realization is still the response
             residuals .= errors_reg[maxlag_ma+1:end]
 
         else
 
-            # ----------------------------------------------------
-            # Fixed MA design
-            # ----------------------------------------------------
+            # -----------------------------------------------------
+            # Fixed-MA-design phase
+            # -----------------------------------------------------
 
             @assert size(Z_fixed, 1) == size(Z_ar, 1)
 
-            n_ar = size(Z_ar, 2)
-
-            @views Z[:, 1:n_ar]     .= Z_ar
-            @views Z[:, n_ar+1:end] .= Z_fixed
-
-            Z_ma .= Z_fixed
+            @views Z[:, 1:size(Z_ar, 2)] .= Z_ar
+            @views Z[:, size(Z_ar, 2)+1:end] .= Z_fixed
 
             compute_conditional_mean!(
                 cond_mean,
@@ -857,42 +683,22 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
             )
         end
 
+    elseif SMA
 
-    elseif model_type == :SMA
-
-        # ========================================================
-        # SMA
-        # ========================================================
-
-        # --------------------------------------------------------
-        # Expand MA coefficients
-        # --------------------------------------------------------
-
+        #adapt = i ≤ nBurn
         @inbounds Threads.@threads for t in 1:T
-            row = view(state, t+1, startcol:stopcol)
-            out = view(ψ_mat, :, t)
-
-            MultiSARMAtoReg_cached!(
-                out,
-                row,
-                cache_ma;
-                ztrans = ztrans,
-                negative_signs = false
-            )
+                row = view(state, t+1, startcol:stopcol)
+                out = view(ψ_mat, :, t)
+                MultiSARMAtoReg_cached!(out, row, cache_ma; ztrans=ztrans, negative_signs=false)
+                #MultiSARMAtoReg!(out, row, p2, s2, activeLags_ma;ztrans=ztrans, negative_signs=false)
         end
-
-        expand_grouped_states_fast!(
-            ψ_expanded,
-            ψ_mat,
-            nPerGroup,
-            T_all
-        )
-
-
-        # --------------------------------------------------------
-        # Learn MA regressors, then freeze
-        # --------------------------------------------------------
-
+        expand_grouped_states_fast!(ψ_expanded, ψ_mat, nPerGroup, T_all)
+   
+        ### Median trick
+        
+        # ---------------------------------------------------------
+        # Learn MA error regressors, then freeze them i=1
+        # ---------------------------------------------------------
         if i <= freeze_iter
 
             errors_reg = build_MA_errors_banded(
@@ -920,37 +726,30 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
 
             # Running pointwise median
             med_error = dropdims(
-                median(
-                    @view(errors_med[:, 1:i]),
-                    dims = 2
-                );
-                dims = 2
+                median(@view(errors_med[:, 1:i]), dims=2);
+                dims=2
             )
 
-            # MA regressors from median error path
-            _, Z_MA, _ = SetupARReg_active(
+            # MA lagged-error regressors based on running median
+            _, Z, _ = SetupARReg_active(
                 med_error,
                 activeLags_ma
             )
 
-            # Current design matrix
-            Z .= Z_MA
-
-            # Freeze design
+            # Freeze the design after adaptation
             if i == freeze_iter
-                Z_fixed = copy(Z_MA)
+                Z_fixed = copy(Z)
             end
 
-            # Current reconstructed error realization
+            # Current reconstructed error path
             residuals .= errors_reg[maxlag_ma+1:end]
 
         else
 
-            # ----------------------------------------------------
-            # Fixed MA design
-            # ----------------------------------------------------
-
-            Z .= Z_fixed
+            # -----------------------------------------------------
+            # Fixed-Z phase
+            # -----------------------------------------------------
+            Z = Z_fixed
 
             compute_conditional_mean!(
                 cond_mean,
@@ -968,75 +767,49 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
             )
         end
 
-
-    elseif model_type == :SAR
-
-        # ========================================================
-        # SAR
-        # ========================================================
-
-        # --------------------------------------------------------
-        # Expand AR coefficients
-        # --------------------------------------------------------
-
+        #_, Z, _     = SetupARReg_active(errors_reg, activeLags_ma)
+        #residuals = errors_reg
+       
+    elseif SAR
+        
+        # fast
         @views @inbounds for t in 1:T
             row = state[t+1, startcol:stopcol]
             out = ϕ_mat[:, t]
-
-            MultiSARMAtoReg_cached!(
-                out,
-                row,
-                cache_ar;
-                ztrans = ztrans,
-                negative_signs = true
-            )
+            MultiSARMAtoReg_cached!(out, row, cache_ar; ztrans=ztrans, negative_signs=true)
         end
+            expand_grouped_states_fast!(ϕ_expanded, ϕ_mat, nPerGroup, T_all)
+            ϕ_sum = vec(sum(ϕ_expanded; dims=1))   # length T_all
 
-        expand_grouped_states_fast!(
-            ϕ_expanded,
-            ϕ_mat,
-            nPerGroup,
-            T_all
-        )
+       if !SAR_conditional         
+              
+       init_y, Z = build_AR_init_opt_orig!(
+                    x0_buf,
+                    int_exp,
+                    m0_buf,
+                    group_map,
+                    ws_presample,
+                    Y,
+                    state,
+                    ϕ_expanded,
+                    activeLags_ar,
+                    p1, s1,
+                    p_max,
+                    σₑ²,
+                    σy;
+                    INTERCEPT = INTERCEPT,
+                    cond_sma  = nothing,
+                    Z = Z,
+                    l = nPerGroup,
+                    presample_method = :posterior,
+                    #presample_method = :recursive,
+                    #rng=rng
+                    )
+        
+            end
 
-        ϕ_sum = vec(sum(ϕ_expanded; dims=1))
-
-
-        # --------------------------------------------------------
-        # AR presample
-        # --------------------------------------------------------
-
-        if !SAR_conditional
-
-            init_y, Z = build_AR_init_opt_orig!(
-                x0_buf,
-                int_exp,
-                m0_buf,
-                group_map,
-                ws_presample,
-                Y,
-                state,
-                ϕ_expanded,
-                activeLags_ar,
-                p1,
-                s1,
-                p_max,
-                σₑ²,
-                σy;
-                INTERCEPT = INTERCEPT,
-                cond_sma = nothing,
-                Z = Z,
-                l = nPerGroup,
-                presample_method = :posterior
-            )
-        end
-
-
-        # --------------------------------------------------------
-        # Conditional mean and residuals
-        # --------------------------------------------------------
-
-        compute_conditional_mean!(
+       #cond_mean = compute_conditional_mean(Z, ϕ_expanded, state; INTERCEPT = INTERCEPT)
+       compute_conditional_mean!(
             cond_mean,
             Z,
             ϕ_expanded,
@@ -1044,84 +817,57 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
             group_map_T;
             INTERCEPT = INTERCEPT
         )
-
-        compute_residuals!(
-            residuals,
-            Y,
-            cond_mean
-        )
-
-    else
-
-        error("model_type must be :SAR, :SMA, or :SARMA")
-
+        compute_residuals!(residuals, Y, cond_mean)
     end
 
-
-    # ============================================================
-    # Recompute Cargs
-    # ============================================================
-
-    if model_type == :SAR
+    # ==================================================
+    # Recompute Cargs (FAST + THREADED)
+    # ==================================================
+    if SAR
 
         if !SAR_conditional
-            @inbounds copyto!(
-                Cargs[1][1],
-                view(Z, 1, :)
-            )
+            @inbounds copyto!(Cargs[1][1], view(Z, 1, :))
         end
-
-    elseif model_type == :SMA || model_type == :SARMA
-
-        build_Cargs_fast_threaded!(
-            Cargs_raw,
-            Z,
-            T_all
-        )
-
-        Cargs = group_vector(
-            Cargs_raw,
-            nPerGroup
-        )
-
+         
+    else
+ 
+        build_Cargs_fast_threaded!(Cargs_raw, Z, T_all)
+        Cargs = group_vector(Cargs_raw, nPerGroup)    
+ 
     end
 
     # ==================================================
     # Update observation noise / SV
     # ==================================================
-
-    if obs_var_type == :SV
-
+    if SV
         if nPerGroup > 1
 
-            h̄, ϕ̄v, μ̄v, σ̄²ₙ = UpdateErrorVolatility_grouped!(
-                residuals,           # ORIGINAL scale residuals (length T_all)
+             h̄, ϕ̄v, μ̄v, σ̄²ₙ = UpdateErrorVolatility_grouped!(
+               residuals,           # ORIGINAL scale residuals (length T_all)
                 h̄, ξ̄, ϕ̄v, μ̄v, σ̄²ₙ,
                 ϕ̄₀, κ̄₀, m̄₀, σ̄₀, ν̄₀, ψ̄₀,
                 mixLogχ²₁, m, v;
-                g = nPerGroup,
-                offsetSV = eps()
-            )
+                g=nPerGroup,
+               offsetSV = eps())
 
             σₑ_g = exp.(h̄ ./ 2)
-            expand_sigma_grouped!(σₑ, σₑ_g, nPerGroup, T_all)
+            expand_sigma_grouped!(σₑ, σₑ_g, l, T_all)
 
         else
 
             h̄, ϕ̄v, μ̄v, σ̄²ₙ =
                 UpdateErrorVolatility(
-                    residuals, h̄, ξ̄, ϕ̄v, μ̄v, σ̄²ₙ,
-                    ϕ̄₀, κ̄₀, log(σ0^2), σ̄₀, ν̄₀, ψ̄₀,
-                    mixLogχ²₁, m, v;
-                    offsetSV = eps()
-                )
+                residuals, h̄, ξ̄, ϕ̄v, μ̄v, σ̄²ₙ,
+                ϕ̄₀, κ̄₀, log(σ0^2), σ̄₀, ν̄₀, ψ̄₀, ### OBS chnaged mo to log()
+                mixLogχ²₁, m, v;
+                offsetSV = eps()
+             )
 
             #σₑ = vec(reshape(exp.(h̄ ./ 2), :, 1)[pre_length+1:end, :])
             σₑ = reshape(exp.(h̄ ./ 2), :, 1)
         end
 
-
-    elseif obs_var_type == :SVDSP
+    elseif SVDSP
 
         hstar, h̄, h̃, Ssv, ξ̄, ϕ̄v, μ̄v =
             UpdateErrorVolatility_DSP(
@@ -1133,27 +879,15 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
                 #offsetSV = 10^-4
             )
 
-        if d_order == 1
+        if d_order ==1
             σₑ = vec(reshape(exp.(hstar[2:end] ./ 2), :, 1))
         else
             σₑ = vec(reshape(exp.(hstar[3:end] ./ 2), :, 1))
         end
-
-
-    elseif obs_var_type == :static
-
-        σₑ = compute_noise_SARMA(
-            alpha_sigma_hat,
-            beta_sigma,
-            residuals
-        )
-
-        σₑ = fill(σₑ, T_all, 1)
-
-
     else
-
-        error("obs_var_type must be :SV, :SVDSP, or :static")
+ 
+        σₑ = compute_noise_SARMA(alpha_sigma_hat, beta_sigma, residuals)
+        σₑ = fill(σₑ, T_all, 1)
 
     end
 
@@ -1164,161 +898,93 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
     # ==================================================
     # Store MA errors during adaptation
     # ==================================================
-    if model_type in (:SMA, :SARMA) && i <= freeze_iter
+    if (SMA || SARMA) && i <= freeze_iter
         errors_mx[:, :, i] .= errors_reg
     end
 
-    if i > nBurn && ((i - nBurn) % thin_factor == 0)
-
+     if  i > nBurn && ((i - nBurn) % thin_factor == 0)
+        
         thin_idx += 1
         #idx = i - nBurn
 
-        θpost[:, :, thin_idx] .= state[2:end, :]
-        Hpost[:, :, thin_idx] .= H
-
-        # --------------------------------------------------
-        # Observation variance draws
-        # --------------------------------------------------
-
-        if obs_var_type in (:SV, :SVDSP)
-
+        θpost[:, :,  thin_idx] .= state[2:end, :]
+        Hpost[:, :,  thin_idx] .= H
+       
+        if SVDSP || SV
+        
             if nPerGroup > 1
-                σₑpost[:, thin_idx] .= σₑ
+                σₑpost[:,  thin_idx]   .= σₑ_g
             else
-                σₑpost[:, thin_idx] .= σₑ
+                σₑpost[:,  thin_idx]   .= σₑ
             end
-
+    
         else
-            σₑpost[thin_idx] = σₑ[1]
+            σₑpost[thin_idx]   = σₑ[1]
         end
 
-        ϕpost[:, thin_idx] .= ϕ
-        μpost[:, thin_idx] .= μ
-
+        ϕpost[:, thin_idx]   .= ϕ
+        μpost[:, thin_idx]   .= μ 
         #scale_post[:, thin_idx] .= σ²ₙ
         #cond_mean_post[:, thin_idx] .= cond_mean
 
-        # --------------------------------------------------
-        # Static state variance
-        # --------------------------------------------------
-
-        if state_var_type == :static
+        if !DSP_label
             static_state_var[:, thin_idx] .= static_var
         end
 
-
-        # --------------------------------------------------
-        # Observation-volatility parameters
-        # --------------------------------------------------
-
-        if obs_var_type == :SV
-
-            μ̃post[:, thin_idx]   .= μ̄v
-            ϕ̃post[:, thin_idx]   .= ϕ̄v
-            σ̄²ₙpost[:, thin_idx] .= σ̄²ₙ
-
-        elseif obs_var_type == :SVDSP
-
+        if SV
+            μ̃post[:, thin_idx] .= μ̄v
+            ϕ̃post[:, thin_idx] .= ϕ̄v
+            σ̄²ₙpost[:, thin_idx] .= σ̄²ₙ    
+        elseif SVDSP
             h̃post[:, thin_idx] .= h̄
             μ̃post[:, thin_idx] .= μ̄v
             ϕ̃post[:, thin_idx] .= ϕ̄v
-
-            #σ̄²ₙpost[:,idx] .= 1 ./ ξ̄
+            #σ̄²ₙpost[:,idx] .= 1 ./ξ̄
         end
 
-
-        # --------------------------------------------------
-        # Model-specific storage
-        # --------------------------------------------------
-
-        if model_type == :SARMA
-
-            #errors_mx[:, :, thin_idx] .= residuals
-            y_mx[:, :, thin_idx] .= init_y
-
-        elseif model_type == :SAR
-
+        if SARMA
+            #errors_mx[:, :,  thin_idx] .= residuals
+            y_mx[:, :,  thin_idx]      .= init_y
+        elseif SAR
             if !SAR_conditional
-                y_mx[:, :, thin_idx] .= init_y
+            y_mx[:, :,  thin_idx]      .= init_y
             end
+            #intercept_true[thin_idx,: ] = x_mean .*(1 .-ϕ_sum) + state[2:end, 1]
+            #intercept_true[thin_idx,: ] = x_mean .*(1 .-ϕ_sum) + sd .*state[2:end, 1]
 
-            #intercept_true[thin_idx,:] =
-            #    x_mean .* (1 .- ϕ_sum) + state[2:end, 1]
-
-            #intercept_true[thin_idx,:] =
-            #    x_mean .* (1 .- ϕ_sum) + sd .* state[2:end, 1]
-
-            #elseif model_type == :SMA
-            #    errors_mx[:, :, thin_idx] .= errors_reg
-
+          #elseif SMA
+          # errors_mx[:, :, thin_idx] = errors_reg
         end
     end
+end # end Gibbs
 
-    end # end Gibbs
+if SARMA
+    return θpost, Hpost, σₑpost, errors_mx, y_mx
 
-    # ==================================================
-    # Return draws
-    # ==================================================
+elseif SMA
+    return θpost, Hpost, σₑpost, ϕpost, μpost, errors_mx
 
-    if model_type == :SARMA
-
-        return θpost, Hpost, σₑpost, errors_mx, y_mx
-
-
-    elseif model_type == :SMA
-
-        return θpost, Hpost, σₑpost, ϕpost, μpost, errors_mx
-
-
-    elseif model_type == :SAR
-
-        if !SAR_conditional
-
-            if obs_var_type in (:SV, :SVDSP)
-
-                return θpost, Hpost, σₑpost,
-                    ϕpost, μpost,
-                    μ̃post, ϕ̃post, h̃post, σ̄²ₙpost,
-                    y_mx, static_state_var, intercept_true
-
-            else
-
-                return θpost, Hpost, σₑpost,
-                    ϕpost, μpost,
-                    y_mx, static_state_var,
-                    cond_mean_post, intercept_true
-            end
-
+elseif SAR
+    if !SAR_conditional
+        if SV || SVDSP
+            return θpost, Hpost, σₑpost, ϕpost, μpost, μ̃post, ϕ̃post, h̃post, σ̄²ₙpost, y_mx, static_state_var, intercept_true
         else
-
-            if obs_var_type in (:SV, :SVDSP)
-
-                return θpost, Hpost, σₑpost,
-                    ϕpost, μpost,
-                    μ̃post, ϕ̃post, h̃post, σ̄²ₙpost,
-                    static_state_var, intercept_true
-
-            else
-
-                return θpost, Hpost, σₑpost,
-                    ϕpost, μpost
-            end
-
+            return θpost, Hpost, σₑpost, ϕpost, μpost, y_mx, static_state_var, cond_mean_post, intercept_true
+        end
+    else
+        if SV || SVDSP
+            return θpost, Hpost, σₑpost, ϕpost, μpost, μ̃post, ϕ̃post, h̃post, σ̄²ₙpost, static_state_var, intercept_true
+        else
+            return θpost, Hpost, σₑpost, ϕpost, μpost
         end
 
-    else
-
-        error(
-            "No valid model type selected: model_type=$model_type. " *
-            "Use :SAR, :SMA, or :SARMA."
-        )
-
     end
+else
+    error("No valid model type selected: SARMA=$SARMA, SMA=$SMA, SAR=$SAR")
+end
+end
 
-    end
 
-
-    
 ### FFBS
 function FFBSx(
     U, y_g, A, B,  Cargs, Σₑ, Σₙ, μ₀, Σ₀, max_iterations,
@@ -1516,7 +1182,7 @@ function FFBSx(
         μpred   = @view μ_pred[t+1, :]
         Σpred   = @view Σ_pred[:, :, t+1]
 
-        BackwardSim!(
+        BackwardSim_ref!(
             xt,
             xnext,
             μfilt,
@@ -1529,7 +1195,7 @@ function FFBSx(
     end
    
     x0 = zeros(n)
-    BackwardSim!(
+    BackwardSim_ref!(
         x0,
         view(X, 1, :),
         μ₀,
@@ -1840,7 +1506,7 @@ function ekf_update_sequential_diagR2!(
 end
 
 
-function BackwardSim!(
+function BackwardSim_ref!(
     out_x,
     x_next,
     μ_filt, Σ_filt,
@@ -1916,7 +1582,7 @@ end
 
 function FFBSx_sarma(
     U, y_g, A, B, Cargs, Σₑ, Σₙ, μ₀, Σ₀, max_iterations,
-    α_ukf, β_ukf, κ_ukf, ws_ar, ws_ma, ws_sarma, kl_ar, kl_ma;
+    α_ukf, β_ukf, κ_ukf, ws_ar, ws_ma;
     resid_check::Bool = true,
     mode::Symbol = :iekf,
     startcol::Int,
@@ -1993,6 +1659,9 @@ function FFBSx_sarma(
         #At      = staticA ? A : view(A, :, :, t)
         Cargs_t = staticCargs ? Cargs : Cargs[t]
 
+        #Σₑt = Diagonal(Σₑ_g[t])
+        #copyto!(Σₑt.diag, Σₑ_g[t])
+
         if intercept_dynamics === :ll && INTERCEPT
             Σₙ_base = staticΣₙ ? Σₙ : Σₙ[t]
             fill!(Σₙ_buf, 0.0)
@@ -2026,7 +1695,7 @@ function FFBSx_sarma(
             max_iterations,
             resid_check,
             Val(mode),
-            ws_ar, ws_ma, ws_sarma;
+            ws_ar, ws_ma;
             cache_ar    = cache_ar,
             cache_ma    = cache_ma,
             ztrans   = ztrans,
@@ -2055,6 +1724,14 @@ function FFBSx_sarma(
     end
 
     # ---- backward sampling ----
+    #KG_buf   = zeros(n, n)
+    #tmp_vec  = zeros(n)
+    #tmp_mat  = zeros(n, n)
+    #tmp_mat2 = zeros(n, n)
+
+    #X = zeros(T, n)
+    #copyto!(view(X, T, :),rand(MvNormal(view(μ_filter, T, :),Hermitian(view(Σ_filter, :, :, T)))))
+
     X = zeros(T, n)
 
     @views begin
@@ -2088,7 +1765,7 @@ function FFBSx_sarma(
         μpred   = @view μ_pred[t+1, :]
         Σpred   = @view Σ_pred[:, :, t+1]
 
-        BackwardSim!(
+        BackwardSim_ref!(
             xt,
             xnext,
             μfilt,
@@ -2101,7 +1778,7 @@ function FFBSx_sarma(
     end
    
     x0 = zeros(n)
-    BackwardSim!(
+    BackwardSim_ref!(
         x0,
         view(X, 1, :),
         μ₀,
@@ -2147,8 +1824,7 @@ function kalmanfilter_update_sarma!(
     resid_check::Bool,
     ::Val{MODE},
     ws_ar::IEKFWorkspace,
-    ws_ma::IEKFWorkspace,
-    ws_sarma::IEKFWorkspace,;
+    ws_ma::IEKFWorkspace;
     cache_ar::SARMARegCache,
     cache_ma::SARMARegCache,
     ztrans::AbstractString="partials",
@@ -2258,11 +1934,11 @@ function kalmanfilter_update_sarma!(
         # residuals: y − h(μ̄)
         # --------------------------------------------------
 
-        compute_resid_sarma!(resid, y, reg_ar, reg_ma, Cargs, θ₀,kl_ar,kl_ma)
+        compute_resid_sarma!(resid, y, reg_ar, reg_ma, Cargs, θ₀)
 
-        # ==================================================
-        # CASE 1: sequential EKF for grouped observations
-        # ==================================================
+    # ==================================================
+    # CASE 1: sequential EKF for grouped observations
+    # ==================================================
     if ny > 1
 
         ekf_update_sequential_diagR2!(
@@ -2273,7 +1949,7 @@ function kalmanfilter_update_sarma!(
             C̄,
             resid,
             Σₑ,
-            ws_sarma;
+            ws;
             joseph = false
         )
 
@@ -2328,15 +2004,15 @@ return nothing
 end
 end
 
-function observation_sarma_scalar(carg, θ₀, reg_ar, reg_ma,kl_ar,kl_ma)
+function observation_sarma_scalar(carg, θ₀, reg_ar, reg_ma)
     # pseudo-structure, adapt to your Cargs layout
     # e.g. carg may contain lagged y-part and lagged e-part
     return θ₀ + dot(carg[1:kl_ar], reg_ar) + dot(carg[kl_ar+1:kl_ar+kl_ma], reg_ma)
 end
 
-function compute_resid_sarma!(resid, y, reg_ar, reg_ma, Cargs, θ₀,kl_ar, kl_ma)
+function compute_resid_sarma!(resid, y, reg_ar, reg_ma, Cargs, θ₀)
     @inbounds for j in eachindex(y)
-        μhat = observation_sarma_scalar(Cargs[j], θ₀, reg_ar, reg_ma,kl_ar,kl_ma)
+        μhat = observation_sarma_scalar(Cargs[j], θ₀, reg_ar, reg_ma)
         resid[j] = y[j] - μhat
     end
     return nothing
