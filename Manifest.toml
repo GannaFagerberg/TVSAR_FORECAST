@@ -1565,7 +1565,7 @@ uuid = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
 version = "1.0.3"
 
 [[deps.TVSAR_FORECAST]]
-deps = ["BandedMatrices", "CSV", "DataFrames", "Dates", "Distributions", "ForwardDiff", "LaTeXStrings", "LinearAlgebra", "LogExpFunctions", "PDMats", "Plots", "PolyaGammaSamplers", "Polynomials", "RCall", "Random", "Serialization", "SparseArrays", "SpecialFunctions", "Statistics", "StatsBase"]
+deps = ["BandedMatrices", "CSV", "Colors", "DataFrames", "Dates", "Distributions", "ForwardDiff", "KernelFunctions", "LaTeXStrings", "LinearAlgebra", "LogExpFunctions", "Measures", "Optim", "PDMats", "Plots", "PolyaGammaSamplers", "Polynomials", "ProgressMeter", "RCall", "Random", "Roots", "Serialization", "SparseArrays", "SpecTools", "SpecialFunctions", "Statistics", "StatsBase"]
 path = "."
 uuid = "024bedff-af80-4790-bd25-c1b1e4bb9f1a"
 version = "0.1.0"

@@ -21,23 +21,10 @@ df = CSV.read(
     DataFrame
 )
 
-df_covid = select_period(
-    df,
-    DateTime(2020, 3, 1),# 1, March 00:00
-    DateTime(2021, 12, 31, 23) #31 December 2021 at 23:00:00
-)
 
-data      = df_covid.demand_VIC
-timestamp = df_covid.datetime
+data      = df.demand_VIC
+timestamp = df.datetime
 
-df_covid_start = select_period(
-    df,
-    DateTime(2016, 1, 1),
-    DateTime(2020, 12, 31, 23)
-)
-
-data      = df_covid_start.demand_VIC
-timestamp = df_covid_start.datetime
 
 
 # Make sure datetime is DateTime
@@ -67,9 +54,9 @@ timestamp = df_covid_start.datetime
 #   1   = ordinary AR component
 #   24  = daily seasonality
 #   168 = weekly seasonality
-season = [1, 24, 168]
+season = [1, 24, 24*7]
 
-# One AR coefficient at each seasonal frequency
+# One AR2coefficient at each seasonal frequency
 p = [1, 1, 1]
 
 s1 = season
@@ -131,7 +118,7 @@ T = length(x_train)
 ############################################################
 
 # Forecast horizon: two weeks
-h = 2 * 168
+h = 1 * 168
 
 test_idx = (p_max[1] + T_train + 1):(p_max[1] + T_train + h)
 

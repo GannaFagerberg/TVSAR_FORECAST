@@ -1,11 +1,13 @@
 module TVSAR_FORECAST
 
+using Polynomials
 using LinearAlgebra
 using SparseArrays
 using Statistics
 using Random
 using Dates
 using Serialization
+using BandedMatrices
 
 using CSV
 using DataFrames
@@ -124,7 +126,8 @@ include("TVSARUtils.jl")
        Arima,
        build_Cargs_fast_threaded!,
        expand_grouped_states,
-       select_period
+       select_period,
+       apply_fisher_scaling
 
 
 include("ForecastFunction.jl")
@@ -137,5 +140,9 @@ export summarize_and_plot_t,
        transform_theta,
        plot_state,
        summarize_and_plot
+
+
+include("FisherFunctions.jl")
+export  FisherInfo_full_global_gaussian,  FisherInfo_full_local_gaussian
        
 end # module TVSAR_FORECAST

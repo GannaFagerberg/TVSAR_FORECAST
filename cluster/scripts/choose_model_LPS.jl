@@ -3,29 +3,61 @@
 # SAR Model Selection by Out-of-Sample Forecasting
 #
 # One job = one (model, forecast origin)
+#julia choose_model_LPS.jl
 ############################################################
 
-
+#cd "C:\Users\Anna Fagerberg\JuliaPackages\TVSAR_FORECAST\cluster\tetralith"
 ############################################################
-# 0. PROJECT / PACKAGES
+# 0. PROJECT / ENVIRONMENT
 ############################################################
 
 using Pkg
 
-ON_SLURM = haskey(ENV, "SLURM_ARRAY_TASK_ID")
+# Are we running under SLURM?
+ON_SLURM = haskey(ENV, "SLURM_JOB_ID")
 
-default_project =
-    Sys.iswindows() ?
-    raw"C:\Users\Anna Fagerberg\JuliaPackages\TVSAR_FORECAST" :
-    abspath(joinpath(@__DIR__, "..", ".."))
+# Specifically an array task?
+ON_SLURM_ARRAY =
+    haskey(ENV, "SLURM_ARRAY_TASK_ID")
 
-project_dir = get(
-    ENV,
-    "TVSAR_PROJECT",
-    default_project
-)
 
-Pkg.activate(project_dir)
+# Script is located at:
+#
+# TVSAR_FORECAST/
+#     cluster/
+#         tetralith/
+#             choose_model_LPS.jl
+#
+# Therefore "..", ".." takes us back to TVSAR_FORECAST.
+
+PROJECT_DIR =
+    abspath(
+        joinpath(
+            @__DIR__,
+            "..",
+            ".."
+        )
+    )
+
+println("Script directory  : ", @__DIR__)
+println("Project directory : ", PROJECT_DIR)
+println("Running on SLURM  : ", ON_SLURM)
+
+# Safety check
+@assert isfile(joinpath(PROJECT_DIR, "Project.toml")) """
+Project.toml not found in:
+
+$PROJECT_DIR
+
+Check the location of choose_model_LPS.jl.
+"""
+
+Pkg.activate(PROJECT_DIR)
+
+
+############################################################
+# Packages
+############################################################
 
 using TVSAR_FORECAST
 using CSV
@@ -36,7 +68,6 @@ using Random
 using LinearAlgebra
 using PDMats
 using JLD2
-
 
 ############################################################
 # 1. WHAT SHOULD THE SCRIPT DO?
@@ -86,8 +117,8 @@ if RUN_SIZE == :mini
 
 else
 
-    nBurn        = 2000
-    nIter        = 2000
+    nBurn        = 500
+    nIter        = 500
     nPredPerIter = 20
 
     # Forecast only every kth retained MCMC draw.
@@ -120,7 +151,7 @@ end
 #
 # Change 1:2 -> 1:3 if later you want all 27 combinations.
 
-regular_orders = 1:3
+regular_orders = 1:2
 daily_orders   = 1:2
 weekly_orders  = 1:2
 
@@ -136,7 +167,6 @@ models = [
 ]
 
 nModels = length(models)
-
 
 
 ############################################################
@@ -191,7 +221,7 @@ maxHorizon = maximum(forecastHorizons)
 # Number of forecast origins
 # ----------------------------------------------------------
 
-nOrigins = 20
+nOrigins = 10
 
 
 # ----------------------------------------------------------
@@ -304,37 +334,64 @@ center_window = 30
 # 7. FILE LOCATIONS
 ############################################################
 
-default_data_file =
-    Sys.iswindows() ?
-    raw"C:\Users\Anna Fagerberg\Desktop\PROJECTS IN JULIA\DATA\AustralianElecPriceDemand202512_hourly.csv" :
-    joinpath(
-        @__DIR__,
-        "AustralianElecPriceDemand202512_hourly.csv"
+if Sys.iswindows()
+
+    default_data_file =
+        raw"C:\Users\Anna Fagerberg\Desktop\PROJECTS IN JULIA\DATA\AustralianElecPriceDemand202512_hourly.csv"
+
+else
+
+    # On Teralith, supply this through TVSAR_DATA_FILE
+    default_data_file =
+        joinpath(
+            @__DIR__,
+            "AustralianElecPriceDemand202512_hourly.csv"
+        )
+
+end
+
+
+data_file =
+    get(
+        ENV,
+        "TVSAR_DATA_FILE",
+        default_data_file
     )
 
-data_file = get(
-    ENV,
-    "TVSAR_DATA_FILE",
-    default_data_file
-)
+
+@assert isfile(data_file) """
+Data file not found:
+
+$data_file
+
+Set TVSAR_DATA_FILE to the location of the electricity CSV.
+"""
 
 
-EXPERIMENT_NAME = "AUS_ELEC_SAR_DSP_STATIC"
+EXPERIMENT_NAME =
+    "AUS_ELEC_SAR_DSP_STATIC_MODEL_SELECTION"
 
 
-results_root = get(
-    ENV,
-    "TVSAR_RESULTS_DIR",
-    joinpath(@__DIR__, "results")
-)
+results_root =
+    get(
+        ENV,
+        "TVSAR_RESULTS_DIR",
+        joinpath(@__DIR__, "results")
+    )
 
-results_dir = joinpath(
-    results_root,
-    EXPERIMENT_NAME
-)
+
+results_dir =
+    joinpath(
+        results_root,
+        EXPERIMENT_NAME
+    )
+
 
 mkpath(results_dir)
 
+
+#println("Data file   : ", data_file)
+#println("Results dir : ", results_dir)
 
 ############################################################
 # 8. OTHER EXPERIMENT SETTINGS
@@ -643,13 +700,6 @@ function fit_one_SAR(
     alpha_sigma_hat =
         alpha_sigma +
         T / 2
-
-    # Same quantity as in current estimation script.
-    # Currently not needed explicitly in priorSettings.
-    alpha_sigma_hat_state =
-        alpha_sigma +
-        (T / nPerGroup - 1) / 2
-
 
     ########################################################
     # Grouping
@@ -1280,20 +1330,7 @@ function collect_results(
         end
 
 
-        idx =
-            findall(found)
-
-
-        if isempty(idx)
-
-            @warn(
-                "No results found for $(model.name)"
-            )
-
-            continue
-
-        end
-
+        idx = findall(found)
 
         L =
             LPSs[idx, :]
@@ -1406,22 +1443,19 @@ function collect_results(
 
 
         combined[model.name] =
-            Dict(
-                "LPSs" =>
-                    LPSs,
+        Dict(
+            "LPSs" =>
+                LPSs[idx, :],
 
-                "AEs_model" =>
-                    AEs_model,
+            "AEs_model" =>
+                AEs_model[idx, :],
 
-                "AEs_raw" =>
-                    AEs_raw,
+            "AEs_raw" =>
+                AEs_raw[idx, :],
 
-                "completed_origins" =>
-                    idx
-            )
-
-    end
-
+            "completed_origins" =>
+                idx
+        )
 
     ########################################################
     # Rank models: HIGHER LPS is better
@@ -1639,12 +1673,14 @@ println("Run size           : ", RUN_SIZE)
 println("==============================================")
 println()
 
-
 ############################################################
 # 20. WHICH JOBS DOES THIS PROCESS RUN?
 ############################################################
 
-if ON_SLURM
+if ON_SLURM_ARRAY
+
+    # Teralith SLURM array:
+    # one array task = one model × one forecast origin
 
     slurm_id =
         parse(
@@ -1660,11 +1696,11 @@ if ON_SLURM
 
 elseif !isempty(ARGS)
 
-    # Example:
+    # Local example:
     #
-    # julia model_selection.jl 17
+    # julia choose_model_LPS.jl 17
     #
-    # runs global job 17.
+    # runs global job 17 only.
 
     local_job =
         parse(
@@ -1680,14 +1716,19 @@ elseif !isempty(ARGS)
 
 elseif RUN_SIZE == :mini
 
-    # Local mini test:
+    # Local mini experiment:
     #
-    # first 2 models × first 2 origins
+    # ALL candidate models
+    # ×
+    # first 2 forecast origins
     #
-    # = only four complete estimation/forecast runs.
+    # 12 models × 2 origins = 24 fits
 
-    mini_model_ids  = 1:nModels
-    mini_origin_ids = 1:min(2, nOrigins)
+    mini_model_ids =
+        1:nModels
+
+    mini_origin_ids =
+        1:min(2, nOrigins)
 
 
     jobs_to_run = [
@@ -1702,7 +1743,9 @@ elseif RUN_SIZE == :mini
 
 else
 
-    # Full local sequential run
+    # Full local sequential run:
+    # all 120 model × origin jobs
+
     jobs_to_run =
         collect(
             eachindex(jobs)
@@ -2101,8 +2144,12 @@ for job_id in jobs_to_run
     end
 
 
+    tmp_file =
+    output_file * ".tmp"
+
+
     JLD2.jldopen(
-        output_file,
+        tmp_file,
         "w"
     ) do f
 
@@ -2111,6 +2158,13 @@ for job_id in jobs_to_run
         end
 
     end
+
+
+    mv(
+        tmp_file,
+        output_file;
+        force = true
+    )
 
 
     println(

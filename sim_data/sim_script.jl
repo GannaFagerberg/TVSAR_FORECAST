@@ -1,11 +1,13 @@
 ############################################################
 # Model Type and Configuration
 ############################################################
-using Revise
 using PDMats
-using LinearAlgebra
-using TVSAR_FORECAST
-using Random
+using BandedMatrices
+
+cd("C:/Users/Anna Fagerberg/Desktop/PROJECTS IN JULIA/DATA/real data")
+#airport_data = CSV.read("log_airport.csv", DataFrame) 
+#time_data = CSV.read("airport2.csv", DataFrame)
+
 # ----------------------------------------------------------
 # Deterministic Fourier terms
 # ----------------------------------------------------------
@@ -23,15 +25,14 @@ using Random
 # Data
 ############################################################
 
-x = x_detrend
-T = length(x)
-# plot(x)
+#x = x_detrend
+x = x_data
+plot(x)
 # T / (30 * 24)
 
 ############################################################
 # Model Specification
 ############################################################
-
 #model_type = :SMA
 model_type  = :SAR
 #model_type = :SARMA
@@ -43,15 +44,12 @@ obs_var_type   = :static     # :SV, :SVDSP, :static
 state_var_type = :DSP       # :DSP, :static
 
 INTERCEPT = true
-nPerGroup = 24*30
-#nPerGroup = 1
-#T/nPerGroup
-
-use_fourier = false # have nor embedded here yet
-scaled      = false
+#PerGroup = 24 * 30
+nPerGroup = 1
+use_fourier = false
 
 ############################################################
-# Intercept Dynamics and Starting column
+# Intercept Dynamics
 ############################################################
 
 if INTERCEPT
@@ -60,42 +58,97 @@ else
     intercept_dynamics = nothing
 end
 
-startcol = INTERCEPT ? (intercept_dynamics == :ll ? 3 : 2) : 1
+# ----------------------------------------------------------
+# Starting column
+# ----------------------------------------------------------
+
+if INTERCEPT && intercept_dynamics == :ll
+    startcol = 3
+
+elseif INTERCEPT && intercept_dynamics == :rw   # rw
+    startcol = 2
+
+else
+    startcol = 1
+end
 
 ############################################################
-#  Model specification, etc
+# Seasonality and Model Orders
 ############################################################
+
+# ==================================================
+# Model specification
+# ==================================================
 
 if model_type == :SMA
 
-    season = s1 = s2 = [1, 12]
-    p      = p1 = p2 = [1, 5]
-    pFit   = sum(p2)
+    season = [1, 12]
+    p      = [1, 5]
+
+    s1 = season
+    p1 = p
+
+    s2 = season
+    p2 = p
+
+    pFit = sum(p2)
+
 
 elseif model_type == :SARMA
 
-    s1 = s2 = [1, 12]
-    p1 = p2 = [1, 1]
+    s1 = [1, 12]
+    s2 = [1, 12]
+
+    p1 = [1, 1]
+    p2 = [1, 1]
+
     pFit = sum(p1) + sum(p2)
+
 
 elseif model_type == :SAR
 
-    season = s1 = s2 = [1, 24, 24*7]
-    p      = p1 = p2 = [2, 2, 2]
-    pFit   = sum(p1)
+    season = [1, 12]
+    p      = [1, 1]
+
+    #season = [1, 12]
+    #p      = [1, 1]
+
+    s1 = season
+    p1 = p
+
+    s2 = season
+    p2 = p
+
+    pFit = sum(p1)
+
 
 else
+
     error("model_type must be :SAR, :SMA, or :SARMA")
+
 end
 
-# Total number of params
-nLags = pFit + (INTERCEPT ? (intercept_dynamics == :ll ? 2 : 1) : 0)
+############################################################
+# Maximum Lag
+############################################################
 
 # Total number of lags in all AR and MA polynomials
 p_max = [
     sum(p1 .* s1),
     sum(p2 .* s2)
 ]
+
+
+############################################################
+# Number of State Components
+# Additional Intercept + Slope
+############################################################
+
+if INTERCEPT
+    nLags = INTERCEPT && intercept_dynamics == :ll ? pFit + 2 : pFit + 1
+else
+    nLags = pFit
+end
 
 ############################################################
 # Prior Parameters
@@ -105,7 +158,7 @@ if model_type in (:SARMA, :SMA)
 
     fitted_model = Arima(
         x,
-        order    = [5, 2, 5],
+        order = [5, 2, 5],
         seasonal = [5, 1, 5]
     )
 
@@ -124,6 +177,7 @@ if model_type in (:SARMA, :SMA)
     resid_variance = fitted_model[:sigma2]
     σ0 = sqrt(resid_variance)
 
+
 elseif model_type == :SAR
 
     fitted_model = Arima(
@@ -137,18 +191,27 @@ elseif model_type == :SAR
 
     resid_variance = fitted_model[:sigma2]
     σ0 = sqrt(resid_variance)
-
-
 else
-
     error("model_type must be :SAR, :SMA, or :SARMA")
-
 end
 
 ############################################################
 # Hyperparameters and Regressor Setup
 ############################################################
 
+# ----------------------------------------------------------
+# Static measurement-variance hyperparameters
+# ----------------------------------------------------------
+
+T = length(x)
+
+alpha_sigma = 0.001
+beta_sigma  = 0.001
+
+
+############################################################
+# SARMA Model
+############################################################
 
 # ============================================================
 # Construct regressors by model type
@@ -254,38 +317,30 @@ elseif model_type == :SAR
             activeLags_ar
         )
     end
-
-
 else
-
     error("model_type must be :SAR, :SMA, or :SARMA")
-
 end
 
-
-# ============================================================
-# Posterior shape parameters
-# ============================================================
-
-
-alpha_sigma = 0.001
-beta_sigma  = 0.001
+############################################################
+# Posterior Shape Parameters
+############################################################
 
 if model_type == :SAR
     alpha_sigma_hat = alpha_sigma + T / 2
     alpha_sigma_hat_state = alpha_sigma + (T / nPerGroup - 1) / 2
 else
+    # alpha_sigma_hat = alpha_sigma + (T + p_max[2]) / 2
     alpha_sigma_hat = alpha_sigma + T / 2
 end
-
 
 ############################################################
 # Grouping
 ############################################################
 # Number of observations per group
+# Here: approximately one month of hourly observations
 
 # Needed for inference of the initial presample y-values
-#group_map = build_group_map(p_max[1],nPerGroup)
+group_map = build_group_map(p_max[1],nPerGroup)
 
 # Grouped Observations and Regressors
 y_g = group_vector(Y,nPerGroup)
@@ -295,7 +350,8 @@ Cargs_g =  group_vector_view(Cargs, nPerGroup)
 
 cache_ar = build_sarma_cache(p1, s1, activeLags_ar)   # single cache
 cache_ma = build_sarma_cache(p2, s2, activeLags_ma)   # single cache (if needed)
-      
+
+        
 relu = true
     if relu == true
     ztrans = "partials"
@@ -310,8 +366,8 @@ else
 end
 
 ### Settings
-nBurn = 2000
-nIter = 2000
+nBurn = 3000
+nIter = 5000
 
 ###############
 # FILTER TYPE
@@ -344,6 +400,7 @@ if INTERCEPT && model_type == :SMA
     μ₀[1] = mean(Y[1:10])
 end
 
+
 priorSettings = (
             # --------------------------------------------------
             # State evolution priors
@@ -374,7 +431,10 @@ priorSettings = (
             # --------------------------------------------------
             α_ukf = 1e-3,
             β_ukf = 2.0,
-            κ_ukf = 0
+            κ_ukf = 0,
+
+            x_mean = x_mean,
+            
         )
 
 algoSettings = (
@@ -406,10 +466,14 @@ algoSettings = (
             p_threshold = p_threshold,
 
             presample_AR = :recursive, # :posterior
-            presample_MA = :simple    # :posterior
+            presample_MA = :simple,    # :posterior
             
+            scaling      =:none,            # Scaling of state innov, can be :full, :diagonal or :none
+            FisherInfo   = nothing,    # Scaling for the state
+            noramlization = true,
+            fixed_scaling = true,
+            nCalibScale = nothing
             )
-
         
 modelSettings = (
             
@@ -428,14 +492,7 @@ modelSettings = (
             nLags = nLags,
 
             iterations = num_iters,
-            
-            # --------------------------------------------------
-            # Measurement equation
-            # --------------------------------------------------
         
-            #C  = C_fun3,
-            #∂C = derivC_fun3,
-
             Cargs = Cargs_g,
             Z     = Z,
 
@@ -485,17 +542,48 @@ modelSettings = (
             #use_fourier = true
         )
 
+        
+nCalibScale = 1000
+#scaling      = :none
 
-#p  = p_max[1]
-#k  = length(activeLags_ar)
+#scaling     = :none
+#scaling     = :full
+#scaling     = :diag
+scaling      = :fulllocal
+#scaling     = :diaglocal
 
-#int_exp   = zeros(Float64, p)
-#x0_buf    = zeros(Float64, p)
-#m0_buf    = zeros(Float64, p)
+FisherInfo = get(
+    Dict(
+        :none        => nothing,
+        :full        => FisherInfo_full_global_gaussian,
+        :fulllocal   => FisherInfo_full_local_gaussian,
+        :diag        => FisherInfo_full_global_gaussian,
+        :diaglocal   => FisherInfo_full_local_gaussian,
+    ),
+    scaling,
+) do
+    error("Unknown scaling method: $scaling")
+end
 
-#cond_mean = zeros(Float64, T)
-#residuals = zeros(Float64, T)
-#group_map_T = build_group_map(T, nPerGroup)
+#scatter(sun, y)
+algoSettings = (;algoSettings...,scaling = scaling,FisherInfo = FisherInfo,nCalibScale=nCalibScale);
+#dataSettings = (y=y, X=X, covSel=covSel, nPerGroup=nPerGroup, p_threshold=p_threshold, nreg=nreg);
+
+
+p  = p_max[1]
+bw = p
+k  = length(activeLags_ar)
+
+#ws        = PresampleWorkspace(bw, k)
+group_map = build_group_map(p, nPerGroup)
+int_exp   = zeros(Float64, p)
+x0_buf    = zeros(Float64, p)
+m0_buf    = zeros(Float64, p)
+
+cond_mean = zeros(Float64, T)
+residuals = zeros(Float64, T)
+group_map_T = build_group_map(T, nPerGroup)
+
 
 ### Gibbs
 #static_intercept = false
@@ -503,12 +591,73 @@ modelSettings = (
 #negative_signs   = true
 
 ### CHANGE THE CODES SO THAT I SWITCH BETWEEN MA AND AR in CACHE
+#scaled = false
+#S_sc = fill(1.0, nLags)
+#S_sc[1] = var(Y)
 
 t_st = time()
-Random.seed!(1)
-elapsed = @elapsed begin
+#Random.seed!(1)
+Random.seed!(115)  
 SAR_res = GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSettings)
 #SAR44_res = GibbsSamplerTVSARMA_full_fourier(y_g, Y, priorSettings, modelSettings, algoSettings)
 #SAR44_res = GibbsSamplerTVSARMA_block(y_g, Y, priorSettings, modelSettings, algoSettings)
+t_end = time()
+println("Elapsed: ", (t_end - t_st)/60, " mins") #3.48, 1.29
+
+
+#using JLD2f
+#file="C:/Users/Anna Fagerberg/Desktop/PROJECTS_IN_JULIA/PAPERS_Julia/SARMA/REAL_DATA/Electricity_UK/SAR111_48_336_2016_2019_relu098.jld2"
+#file="C:/Users/Anna Fagerberg/Desktop/PROJECTS_IN_JULIA/PAPERS_Julia/SARMA/REAL_DATA/Electricity_Australia/SAR222_24_168_presentation_gr_m_dsp_prior.jld2"
+#JLD2.@save file SAR44_res
+#JLD2.@load file SAR44_res#11 mins, Gaus prior - awful, 4000 ityer with yearly dynamic!
+
+    #SAR44_res1 = SAR44_res
+    #SAR44_res2 = SAR44_res
+    #SAR44_res3 = SAR44_res
+    #SAR44_res4 = SAR44_res
+    #SAR44_res5 = SAR44_res
+
+    #SAR44_res6 = SAR44_res
+    #SAR44_res7 = SAR44_res
+    #SAR44_res8 = SAR44_res
+    #SAR44_res9 = SAR44_res
+    #SAR44_res10 = SAR44_res
+
+multiple_seeds = false
+scaled         = false
+
+if multiple_seeds
+seeds = [12, 16, 78, 77, 98]
+#seeds = [1, 2, 3, 4, 5]
+
+SAR44_results = Vector{Any}(undef, length(seeds))
+
+for (i, s) in enumerate(seeds)
+
+    println("Running chain $i with seed = $s")
+    t_st = time()
+    Random.seed!(s)
+    SAR44_results[i] = GibbsSamplerTVSARMA_full(
+        y_g,
+        Y,
+        priorSettings,
+        modelSettings,
+        algoSettings
+    )
+
+    t_end = time()
+    println("Elapsed: ", round((t_end - t_st)/60, digits=2), " mins")
 end
-println("Elapsed: ", elapsed / 60, " mins")
+end
+
+#airport_results_scaled_globally =  SAR44_results 
+#SAR44_results_demean_scaled =  SAR44_results 
+
+  #SAR44_results_stand =  SAR44_results 
+  #SAR44_results_demean_scaled =  SAR44_results 
+  #SAR44_results = SAR44_results[2]
+  #SAR44_results = SAR44_results_demean[2]; sd=1
+  #SAR44_results_monah = SAR44_results
+
+
+  #sd

@@ -91,7 +91,7 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
     # ==================================================
     ϕ₀, κ₀, m₀, σ₀, ν₀, ψ₀, μ₀, Σ₀,
     σₑ, alpha_sigma, beta_sigma, alpha_sigma_hat,
-    α_ukf, β_ukf, κ_ukf = priorSettings
+    α_ukf, β_ukf, κ_ukf, x_mean = priorSettings
 
     # ==================================================
     # Algorithm settings
@@ -99,7 +99,8 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
     nBurn, nIter, INTERCEPT, resid_label,
     method_label, model_type,
     SAR_conditional, obs_var_type , state_var_type, ma_regressor_type,
-    clipped_partials,p_threshold, presample_AR,presample_MA = algoSettings 
+    clipped_partials,p_threshold, presample_AR,presample_MA,scaling,
+    FisherInfo,normalization,fixed_scaling,nCalibScale = algoSettings 
 
     # ==================================================
     # Model settings
@@ -173,7 +174,7 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
     S  = zeros(Int, T, nLags)
     σ²ₙ = fill(updateσₙ ? 1.0 : 1.0, nLags) ## Measurement noise scaling
     
-    scale_post  = zeros(nLags,  nThin)
+    #scale_post  = zeros(nLags,  nThin)
 
     if INTERCEPT && intercept_dynamics === :ll
         # State ordering: [c_t, d_t, coefficients...]
@@ -550,6 +551,179 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
     tmp_mat  = zeros(nLags, nLags)
     tmp_mat2 = zeros(nLags, nLags)
 
+    # ==================================================
+    # SCALING - now only for SAR!!!
+    # ==================================================
+    if scaling == :full || scaling == :fulllocal ||scaling == :diag || scaling == :diaglocal || scaling == :full_global 
+        
+        Svec = zeros(nLags, nLags, T) # Storage for scaling matrices
+
+        println("Calibrating Scaling matrix from Laplace with no scaling")
+
+        algoSettingsCalibrate = (; algoSettings..., scaling=:none, nIter=nCalibScale,
+        nBurn=round(Int, 0.1 * nCalibScale), normalization=false, fixed_scaling=false)
+        priorSettings = (; priorSettings..., m₀ = m₀);
+
+        θpost0, _  = GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSettingsCalibrate)
+        mu_hat = zeros(eltype(θpost0), nLags)
+
+        ### Scaling based on all obs.
+        if scaling == :full || scaling == :fulllocal
+
+            for t in 1:T #t=1
+
+                # --------------------------------------------------
+                # Reference state at time t
+                # --------------------------------------------------
+                @views for j in eachindex(mu_hat)
+                    mu_hat[j] = median(θpost0[t, j, :])
+                end
+
+                # --------------------------------------------------
+                # Fisher information
+                # --------------------------------------------------
+                if scaling == :full
+
+                # Group-adjusted Fisher scaling
+                FI = Matrix(nPerGroup *
+                 FisherInfo_full_global_gaussian(
+                                mu_hat,
+                                σₑ[1]^2,
+                                Cargs,
+                                cache_ar,
+                                ws;
+                                INTERCEPT = INTERCEPT,
+                                startcol = startcol,
+                                ztrans = ztrans,
+                                negative_signs = true)/T_all)
+
+                else  # scaling == :fulllocal
+                    FI = Matrix(
+                             FisherInfo_full_global_gaussian(
+                                mu_hat,
+                                σₑ[1]^2,
+                                Cargs,
+                                cache_ar,
+                                ws;
+                                INTERCEPT = INTERCEPT,
+                                startcol = startcol,
+                                ztrans = ztrans,
+                                negative_signs = true))
+                        
+                end
+
+                # --------------------------------------------------
+                # Numerical regularization
+                # --------------------------------------------------
+                @inbounds for i in axes(FI, 1)
+                    FI[i, i] += eps()
+                end
+
+                # --------------------------------------------------
+                # Full inverse Fisher
+                # --------------------------------------------------
+                FIinv = try
+                    inv(Symmetric(FI))
+                catch
+                    @warn "Using pseudoinverse for Fisher information at t=$t"
+                    pinv(FI)
+                end
+
+                # --------------------------------------------------
+                # Optional trace normalization
+                # --------------------------------------------------
+                scale = normalization ? tr(FIinv) / nLags : 1.0
+
+                # --------------------------------------------------
+                # Symmetric full Fisher square root
+                # --------------------------------------------------
+                Svec[:, :, t] .= sqrt(Symmetric(FIinv / scale))
+            end
+
+        ### Scaling based on diagonal contributions only based on grouped contribution
+        elseif scaling == :diag || scaling == :diaglocal
+
+            for t in 1:T
+
+                @views for j in eachindex(mu_hat)
+                    mu_hat[j] = median(θpost0[t, j, :])
+                end
+
+                if scaling == :diag
+                    FI = Matrix(nPerGroup *
+                            FisherInfo_full_global_gaussian(
+                                mu_hat,
+                                σₑ[1]^2,
+                                Cargs,
+                                cache_ar,
+                                ws;
+                                INTERCEPT = INTERCEPT,
+                                startcol = startcol,
+                                ztrans = ztrans,
+                                negative_signs = true) / T_all)
+                else
+                    FI = Matrix( FisherInfo_full_global_gaussian(
+                                mu_hat,
+                                σₑ[1]^2,
+                                Cargs,
+                                cache_ar,
+                                ws;
+                                INTERCEPT = INTERCEPT,
+                                startcol = startcol,
+                                ztrans = ztrans,
+                                negative_signs = true))
+                end
+
+                @inbounds for i in axes(FI, 1)
+                    FI[i, i] += eps()
+                end
+
+                # Full inverse Fisher
+                FIinv = inv(Symmetric(FI))
+
+                # Remove common inverse-Fisher magnitude if requested
+                scale = normalization ? tr(FIinv) / nLags : 1.0
+
+                # Keep diagonal of the full inverse
+                Svec[:, :, t] .= 0.0
+
+                @inbounds for i in axes(FIinv, 1)
+                    Svec[i, i, t] = sqrt(FIinv[i, i] / scale)
+                end
+            end
+        end
+
+        # Scaling-adjusted prior on μ
+        #scalingFactor_avg = diag(mean(Svec, dims = 3)[:,:,1])
+        #m₀ = m₀ - 2*log.(scalingFactor_avg)
+        #priorSettings = (; priorSettings..., m₀ = m₀);
+
+        #println("Average scaling matrix:")
+        #println(mean(Svec, dims = 3)[:,:,1])
+        #println("Adjusted m₀ = $(m₀)")
+    end
+
+    # Define the scaling matrix
+     ScaleMat =
+        if fixed_scaling
+            (par, μ, t) -> Svec[:, :, t]
+        elseif scaling == :full
+            (par, μ, t) -> sqrt(inv(Symmetric(groupSizes[t] * FisherInfo(par, μ, t) /T_all)))
+        elseif scaling == :diag
+            (par, μ, t) -> Diagonal(sqrt(inv(Symmetric(groupSizes[t] * FisherInfo(par, μ, t) / T_all))))
+        elseif scaling == :fulllocal
+            (par, μ, t) -> sqrt(pinv(Symmetric(FisherInfo(par, μ, t))))
+        elseif scaling == :diaglocal
+            (par, μ, t) -> Diagonal(sqrt(pinv(Symmetric(FisherInfo(par, μ, t)))))
+        elseif scaling == :none
+            (par, μ, t) -> I(nState)
+        else
+            error("Invalid scaling option. Choose :full, :diag,     
+                :fulllocal, diaglocal or :none.")
+        end
+
+
+
     ######
     #LOOP
     ######
@@ -559,9 +733,12 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
     # ==================================================
     # Draw local level using FFBS
     # ==================================================
-    Σₙ = state_var_type == :DSP ?
-        LogVol2Covs(H) :
-        Vol2Covs(static_var)
+    
+    Σₙ = state_var_type == :DSP ? LogVol2Covs(H) : Vol2Covs(static_var)
+
+    if scaling != :none
+        Σₙ = apply_fisher_scaling(Σₙ, Svec)
+    end
 
     # seems pretty fast and small allocation
 
@@ -626,6 +803,35 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
     else
         omega = diff(state, dims = 1)  
     end 
+
+    # --------------------------------------------------
+    # Standardize state innovations by Fisher scaling
+    # omega_t <- S_t^{-1} omega_t
+    # --------------------------------------------------
+    if scaling !== :none
+
+        tmp = similar(view(omega, 1, :))
+
+        for t in 1:T
+
+            if intercept_dynamics === :ll
+
+                # c_t itself has been removed from omega,
+                # so use the corresponding Fisher submatrix
+                St = @view Svec[2:end, 2:end, t]
+
+                tmp .= St \ @view(omega[t, :])
+
+            else
+
+                St = @view Svec[:, :, t]
+
+                tmp .= St \ @view(omega[t, :])
+            end
+
+            @view(omega[t, :]) .= tmp
+        end
+    end
 
     if state_var_type == :DSP
 
@@ -1305,8 +1511,7 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
                 y_mx[:, :, thin_idx] .= init_y
             end
 
-            #intercept_true[thin_idx,:] =
-            #    x_mean .* (1 .- ϕ_sum) + state[2:end, 1]
+            #intercept_true[thin_idx,:] = x_mean .* (1 .- ϕ_sum) + state[2:end, 1]
 
             #intercept_true[thin_idx,:] =
             #    x_mean .* (1 .- ϕ_sum) + sd .* state[2:end, 1]

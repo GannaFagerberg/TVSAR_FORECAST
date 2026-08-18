@@ -197,10 +197,6 @@ function update_dsp!(ν, S, H, H̃, ξ, ϕ, μ, σ²ₙ, ϕ₀, κ₀, m₀, σ�
 
     @views for k in 1:p #k=1
 
-    #if INTERCEPT&&k==1
-      #σ²ₙ[k] = 0.5^2
-    #end
-
     # mixture allocation
     S[:,k] = UpdateMixAlloc(Ỹ[:,k], H̃[:,k] .+ μ[k], mixLogχ²₁)
 
@@ -208,9 +204,9 @@ function update_dsp!(ν, S, H, H̃, ξ, ϕ, μ, σ²ₙ, ϕ₀, κ₀, m₀, σ�
                       Dᵩ, ξ[:,k], ϕ[k], σ²ₙ[k], μ[k])
 
     # ---- choose δ ----
-    δ = (INTERCEPT && k == 1) ? 0.01 : 0.01
+    #δ = (INTERCEPT && k == 1) ? 0.01 : 0.01
 
-    ξ[:,k] = Updateξ1(H[:,k], ϕ[k], σ²ₙ[k], μ[k], α, β; δ= δ )
+    ξ[:,k] = Updateξ1(H[:,k], ϕ[k], σ²ₙ[k], μ[k], α, β; δ= 0.0001 )
     #ξ[:,k] = Updateξ(H[:,k], ϕ[k], σ²ₙ[k], μ[k], α, β)
 
     ϕ[k] = Updateϕ(H[:,k], ξ[:,k], μ[k], σ²ₙ[k], ϕ₀, κ₀)

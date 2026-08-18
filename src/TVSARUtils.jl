@@ -255,3 +255,30 @@ function select_period(df, start_date, end_date)
 
     return df[idx, :]
 end
+
+
+function apply_fisher_scaling(Σ_base, Svec)
+
+    T = length(Σ_base)
+
+    Σ_scaled = similar(Σ_base)
+
+    @inbounds for t in 1:T
+
+        St = @view Svec[:, :, t]
+
+        # Base DSP covariance
+        Dt = Matrix(Σ_base[t])
+
+        # Fisher-scaled covariance
+        Qt = St * Dt * St'
+
+        # Enforce exact numerical symmetry
+        Qt = Matrix(Symmetric(Qt))
+
+        # Keep the same PDMat type expected by FFBS
+        Σ_scaled[t] = PDMat(Qt)
+    end
+
+    return Σ_scaled
+end
