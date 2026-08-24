@@ -143,6 +143,7 @@ export summarize_and_plot_t,
 
 
 include("FisherFunctions.jl")
-export  FisherInfo_full_global_gaussian,  FisherInfo_full_local_gaussian
+export  FisherInfo_full_global_gaussian,  FisherInfo_full_local_gaussian, FisherInfo_full_initial_gaussian
+export  prior_t0_gaussian
        
 end # module TVSAR_FORECAST

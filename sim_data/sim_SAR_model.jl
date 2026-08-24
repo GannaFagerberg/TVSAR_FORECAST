@@ -47,7 +47,7 @@ end
 # Simulate SAR11 
 #################
 
-n = 500                    # sample size (after burn-in)
+n = 500 +24                    # sample size (after burn-in)
 p = [1, 1]                 # AR(1) regular, AR(1) seasonal
 s = [1, 12]                # seasonal lag 12
 pmax = sum(p .* s)         # presample size
@@ -146,6 +146,11 @@ x_data = (data .- x_mean)./sd
 plot(x_data)
 #plot(data)
 
+
+train_mean =x_mean
+
+y_test = x_data[501:end]
+x_data = x_data[1:500]
 ######################################################
 #x_data = data[14:end]
 #true_intercept = true_b0[14:end]

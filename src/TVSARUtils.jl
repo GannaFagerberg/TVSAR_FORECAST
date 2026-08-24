@@ -256,10 +256,17 @@ function select_period(df, start_date, end_date)
     return df[idx, :]
 end
 
+# ============================================================
+# Time-varying base covariance:
+# Σ_base[t] is a covariance matrix for each t
+# ============================================================
 
-function apply_fisher_scaling(Σ_base, Svec)
+function apply_fisher_scaling(
+    Σ_base::AbstractVector,
+    Svec
+)
 
-    T = length(Σ_base)
+    T = size(Svec, 3)
 
     Σ_scaled = similar(Σ_base)
 
@@ -267,18 +274,48 @@ function apply_fisher_scaling(Σ_base, Svec)
 
         St = @view Svec[:, :, t]
 
-        # Base DSP covariance
+        # Base covariance at time t
         Dt = Matrix(Σ_base[t])
 
         # Fisher-scaled covariance
         Qt = St * Dt * St'
 
-        # Enforce exact numerical symmetry
+        # Numerical symmetry
         Qt = Matrix(Symmetric(Qt))
 
-        # Keep the same PDMat type expected by FFBS
         Σ_scaled[t] = PDMat(Qt)
     end
+
+    return Σ_scaled
+end
+
+
+# ============================================================
+# Static base covariance:
+# same D is used at every t, but Fisher scaling S_t may vary
+# ============================================================
+
+function apply_fisher_scaling(
+    Σ_base::PDMat,
+    Svec
+)
+
+    T = size(Svec, 3)
+
+    # Static unscaled covariance
+    Dt = Matrix(Σ_base)
+
+    Σ_scaled = [
+        begin
+            St = @view Svec[:, :, t]
+
+            Qt = St * Dt * St'
+            Qt = Matrix(Symmetric(Qt))
+
+            PDMat(Qt)
+        end
+        for t in 1:T
+    ]
 
     return Σ_scaled
 end

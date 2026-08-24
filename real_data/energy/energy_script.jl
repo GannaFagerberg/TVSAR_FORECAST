@@ -344,10 +344,35 @@ if INTERCEPT && model_type == :SMA
     μ₀[1] = mean(Y[1:10])
 end
 
+# ============================================================
+# Fisher-based prior at t = 0
+# ============================================================
+
+if fisher_informed_prior_to
+    n_init = 500
+
+    priorparam_μ = mean(Y[1:n_init])
+    n₀ = 1.0
+
+    Z_init = @view Z[1:n_init, :]
+
+    μ₀, Σ₀ = prior_t0_gaussian(
+        priorparam_μ,
+        n₀,
+        nLags,
+        Z_init,
+        σ0^2,
+        cache_ar;
+        INTERCEPT = INTERCEPT,
+        startcol = startcol,
+        ztrans = ztrans,
+        negative_signs = true,
+        FisherInfo_initial = FisherInfo_full_initial_gaussian
+    )
+end
+
 priorSettings = (
-            # --------------------------------------------------
-            # State evolution priors
-            # --------------------------------------------------
+  
             ϕ₀ = 0.5,                 # Prior mean for ϕ
             κ₀ = 0.3,                 # Prior std for ϕ ~ N(ϕ₀, κ₀²)
 
@@ -374,41 +399,10 @@ priorSettings = (
             # --------------------------------------------------
             α_ukf = 1e-3,
             β_ukf = 2.0,
-            κ_ukf = 0
+            κ_ukf = 0,
+
+            x_mean = nothing,
         )
-
-algoSettings = (
-            # --------------------------------------------------
-            # MCMC control
-            # --------------------------------------------------
-            nBurn = nBurn,
-            nIter = nIter + nBurn,
-
-            # --------------------------------------------------
-            # Model switches
-            # --------------------------------------------------
-            INTERCEPT = INTERCEPT,
-
-            resid_label = iterated,
-            method_label = Symbol(kf_method),
-
-            model_type = model_type,
-            
-            SAR_conditional = SAR_conditional,
-
-            obs_var_type   = obs_var_type ,     # :SV, :SVDSP, :static
-            state_var_type = state_var_type ,    # :DSP, :static
-
-            #ma_regressor_type = :current # :current
-            ma_regressor_type = :median_freeze,
-            
-            clipped_partials = clipped_partials,
-            p_threshold = p_threshold,
-
-            presample_AR = :recursive, # :posterior
-            presample_MA = :simple    # :posterior
-            
-            )
 
         
 modelSettings = (
@@ -486,21 +480,70 @@ modelSettings = (
         )
 
 
-#p  = p_max[1]
-#k  = length(activeLags_ar)
+        
+        algoSettings = (
+            # --------------------------------------------------
+            # MCMC control
+            # --------------------------------------------------
+            nBurn = nBurn,
+            nIter = nIter + nBurn,
 
-#int_exp   = zeros(Float64, p)
-#x0_buf    = zeros(Float64, p)
-#m0_buf    = zeros(Float64, p)
+            # --------------------------------------------------
+            # Model switches
+            # --------------------------------------------------
+            INTERCEPT = INTERCEPT,
 
-#cond_mean = zeros(Float64, T)
-#residuals = zeros(Float64, T)
-#group_map_T = build_group_map(T, nPerGroup)
+            resid_label = iterated,
+            method_label = Symbol(kf_method),
 
-### Gibbs
-#static_intercept = false
-#d_order          = 1
-#negative_signs   = true
+            model_type = model_type,
+            
+            SAR_conditional = SAR_conditional,
+
+            obs_var_type   = obs_var_type ,     # :SV, :SVDSP, :static
+            state_var_type = state_var_type ,    # :DSP, :static
+
+            #ma_regressor_type = :current # :current
+            ma_regressor_type = :median_freeze,
+            
+            clipped_partials = clipped_partials,
+            p_threshold = p_threshold,
+
+            presample_AR = :recursive, # :posterior
+            presample_MA = :simple,    # :posterior
+            
+            scaling      =:none,            # Scaling of state innov, can be :full, :diagonal or :none
+            FisherInfo   = nothing,    # Scaling for the state
+            normalization = true,
+            fixed_scaling = true,
+            nCalibScale   = nothing
+            )
+        
+nCalibScale = 1000
+#scaling      = :none
+
+#scaling   = :none
+#scaling   = :full
+scaling    = :diag
+#scaling   = :fulllocal
+#scaling   = :diaglocal
+
+FisherInfo = get(
+    Dict(
+        :none        => nothing,
+        :full        => FisherInfo_full_global_gaussian,
+        :fulllocal   => FisherInfo_full_local_gaussian,
+        :diag        => FisherInfo_full_global_gaussian,
+        :diaglocal   => FisherInfo_full_local_gaussian,
+    ),
+    scaling,
+) do
+    error("Unknown scaling method: $scaling")
+end
+
+#scatter(sun, y)
+algoSettings = (;algoSettings...,scaling = scaling,FisherInfo = FisherInfo,nCalibScale=nCalibScale);
+#dataSettings = (y=y, X=X, covSel=covSel, nPerGroup=nPerGroup, p_threshold=p_threshold, nreg=nreg);
 
 ### CHANGE THE CODES SO THAT I SWITCH BETWEEN MA AND AR in CACHE
 

@@ -554,10 +554,10 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
     # ==================================================
     # SCALING - now only for SAR!!!
     # ==================================================
+    Svec = zeros(nLags, nLags, T) # Storage for scaling matrices
+
     if scaling == :full || scaling == :fulllocal ||scaling == :diag || scaling == :diaglocal || scaling == :full_global 
         
-        Svec = zeros(nLags, nLags, T) # Storage for scaling matrices
-
         println("Calibrating Scaling matrix from Laplace with no scaling")
 
         algoSettingsCalibrate = (; algoSettings..., scaling=:none, nIter=nCalibScale,
@@ -662,7 +662,7 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
                                 ztrans = ztrans,
                                 negative_signs = true) / T_all)
                 else
-                    FI = Matrix( FisherInfo_full_global_gaussian(
+                    FI = Matrix(FisherInfo_full_global_gaussian(
                                 mu_hat,
                                 σₑ[1]^2,
                                 Cargs,
@@ -1551,10 +1551,7 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
 
             else
 
-                return θpost, Hpost, σₑpost,
-                        ϕpost, μpost,
-                        y_mx, static_state_var,
-                        cond_mean_post, intercept_true
+                return θpost, Hpost, σₑpost,ϕpost, μpost,y_mx, static_state_var, cond_mean_post, intercept_true, Svec[:,:,T]
             end
 
         else

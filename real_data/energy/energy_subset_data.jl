@@ -18,7 +18,7 @@ df_train = select_period(
 
 #timestamp_train[1,:]
 data_train      = df_train.demand_VIC
-#timestamp_train = df_train.datetime
+timestamp_train = df_train.datetime
 
 # ============================================================
 # Test data: next 7 days = 24*7 hours
@@ -31,7 +31,7 @@ df_test = select_period(
 )
 
 y_test_raw    = df_test.demand_VIC
-#timestamp_test = df_test.datetime
+timestamp_test = df_test.datetime
 
 @show length(y_test_raw)       # should be 168
 @show first(timestamp_test)

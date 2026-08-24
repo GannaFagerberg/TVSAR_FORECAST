@@ -2,7 +2,9 @@
 # Forecast Setup
 ############################################################
 
-g_new  = nPerGroup
+nPerGroup_fit = nPerGroup
+g_new  = 1
+
 T      = length(y_g)
 season = s1
 
@@ -10,6 +12,17 @@ forecastHorizons = collect(1:length(y_test))
 
 nPredPerIter = 10
 statTrans    = ztrans
+
+log_transform = true
+
+if algoSettings.scale == :none
+    scaling       = false
+else
+    scaling       = true
+end
+
+normalization = algoSettings.normalization
+#local_S = false
 
 ############################################################
 # Initial Lag Vector for Forecasting
@@ -32,6 +45,14 @@ activeLags = activeLags_ar
 ############################################################
 # State-Innovation Variance Parameters
 ############################################################
+
+if scaling
+    S_T = copy(SAR_res[10])
+
+    if !normalization
+        S_T .*= sqrt(nPerGroup_fit / g_new)
+    end
+end
 
 if algoSettings.state_var_type == :DSP
 
@@ -180,7 +201,10 @@ yPreds, LPS_est, AE = PredLocalMultiSAR_SV_gr(
 
     intercept_dynamics  = intercept_dynamics,
     startcol            = startcol,
-    p_threshold         = p_threshold
+    p_threshold         = p_threshold,
+
+    scaling = scaling,
+    S_T = S_T
 )
 
 t_end = time()
@@ -233,7 +257,7 @@ y_h50 = reshape(
     yPreds,
     length(y_test[1:h_length]),
     1,
-    size(y_res, 2)
+    size(yPreds, 2)
 )
 
 
@@ -249,7 +273,6 @@ y_mat = reshape(
 )
 
 
-log_transform = true
 
 if log_transform
 
@@ -278,7 +301,7 @@ plot_state(
     res_transf[1:h_length, :, :];
 
     prefix   = "TV-SAR(1,1,1)s=24,168",
-    ylim     = (3000, 8000),
+    ylim     = (0, 8000),
     xlim     = (0, forecastHorizons),
     true_phi = truth,
     alpha    = 0.05,

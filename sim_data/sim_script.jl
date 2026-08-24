@@ -45,7 +45,7 @@ state_var_type = :DSP       # :DSP, :static
 
 INTERCEPT = true
 #PerGroup = 24 * 30
-nPerGroup = 1
+nPerGroup = 5
 use_fourier = false
 
 ############################################################
@@ -366,8 +366,8 @@ else
 end
 
 ### Settings
-nBurn = 3000
-nIter = 5000
+nBurn = 5000
+nIter = 10000
 
 ###############
 # FILTER TYPE
@@ -437,44 +437,7 @@ priorSettings = (
             
         )
 
-algoSettings = (
-            # --------------------------------------------------
-            # MCMC control
-            # --------------------------------------------------
-            nBurn = nBurn,
-            nIter = nIter + nBurn,
-
-            # --------------------------------------------------
-            # Model switches
-            # --------------------------------------------------
-            INTERCEPT = INTERCEPT,
-
-            resid_label = iterated,
-            method_label = Symbol(kf_method),
-
-            model_type = model_type,
-            
-            SAR_conditional = SAR_conditional,
-
-            obs_var_type   = obs_var_type ,     # :SV, :SVDSP, :static
-            state_var_type = state_var_type ,    # :DSP, :static
-
-            #ma_regressor_type = :current # :current
-            ma_regressor_type = :median_freeze,
-            
-            clipped_partials = clipped_partials,
-            p_threshold = p_threshold,
-
-            presample_AR = :recursive, # :posterior
-            presample_MA = :simple,    # :posterior
-            
-            scaling      =:none,            # Scaling of state innov, can be :full, :diagonal or :none
-            FisherInfo   = nothing,    # Scaling for the state
-            noramlization = true,
-            fixed_scaling = true,
-            nCalibScale = nothing
-            )
-        
+    
 modelSettings = (
             
             # --------------------------------------------------
@@ -542,15 +505,52 @@ modelSettings = (
             #use_fourier = true
         )
 
+        algoSettings = (
+            # --------------------------------------------------
+            # MCMC control
+            # --------------------------------------------------
+            nBurn = nBurn,
+            nIter = nIter + nBurn,
+
+            # --------------------------------------------------
+            # Model switches
+            # --------------------------------------------------
+            INTERCEPT = INTERCEPT,
+
+            resid_label = iterated,
+            method_label = Symbol(kf_method),
+
+            model_type = model_type,
+            
+            SAR_conditional = SAR_conditional,
+
+            obs_var_type   = obs_var_type ,     # :SV, :SVDSP, :static
+            state_var_type = state_var_type ,    # :DSP, :static
+
+            #ma_regressor_type = :current # :current
+            ma_regressor_type = :median_freeze,
+            
+            clipped_partials = clipped_partials,
+            p_threshold = p_threshold,
+
+            presample_AR = :recursive, # :posterior
+            presample_MA = :simple,    # :posterior
+            
+            scaling      =:none,            # Scaling of state innov, can be :full, :diagonal or :none
+            FisherInfo   = nothing,    # Scaling for the state
+            normalization = true,
+            fixed_scaling = true,
+            nCalibScale   = nothing
+            )
         
 nCalibScale = 1000
 #scaling      = :none
 
-#scaling     = :none
-#scaling     = :full
-#scaling     = :diag
-scaling      = :fulllocal
-#scaling     = :diaglocal
+scaling    = :none
+# scaling      = :full
+# scaling      = :diag
+# scaling      = :fulllocal
+# scaling      = :diaglocal
 
 FisherInfo = get(
     Dict(
@@ -604,60 +604,4 @@ SAR_res = GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSet
 t_end = time()
 println("Elapsed: ", (t_end - t_st)/60, " mins") #3.48, 1.29
 
-
-#using JLD2f
-#file="C:/Users/Anna Fagerberg/Desktop/PROJECTS_IN_JULIA/PAPERS_Julia/SARMA/REAL_DATA/Electricity_UK/SAR111_48_336_2016_2019_relu098.jld2"
-#file="C:/Users/Anna Fagerberg/Desktop/PROJECTS_IN_JULIA/PAPERS_Julia/SARMA/REAL_DATA/Electricity_Australia/SAR222_24_168_presentation_gr_m_dsp_prior.jld2"
-#JLD2.@save file SAR44_res
-#JLD2.@load file SAR44_res#11 mins, Gaus prior - awful, 4000 ityer with yearly dynamic!
-
-    #SAR44_res1 = SAR44_res
-    #SAR44_res2 = SAR44_res
-    #SAR44_res3 = SAR44_res
-    #SAR44_res4 = SAR44_res
-    #SAR44_res5 = SAR44_res
-
-    #SAR44_res6 = SAR44_res
-    #SAR44_res7 = SAR44_res
-    #SAR44_res8 = SAR44_res
-    #SAR44_res9 = SAR44_res
-    #SAR44_res10 = SAR44_res
-
-multiple_seeds = false
-scaled         = false
-
-if multiple_seeds
-seeds = [12, 16, 78, 77, 98]
-#seeds = [1, 2, 3, 4, 5]
-
-SAR44_results = Vector{Any}(undef, length(seeds))
-
-for (i, s) in enumerate(seeds)
-
-    println("Running chain $i with seed = $s")
-    t_st = time()
-    Random.seed!(s)
-    SAR44_results[i] = GibbsSamplerTVSARMA_full(
-        y_g,
-        Y,
-        priorSettings,
-        modelSettings,
-        algoSettings
-    )
-
-    t_end = time()
-    println("Elapsed: ", round((t_end - t_st)/60, digits=2), " mins")
-end
-end
-
-#airport_results_scaled_globally =  SAR44_results 
-#SAR44_results_demean_scaled =  SAR44_results 
-
-  #SAR44_results_stand =  SAR44_results 
-  #SAR44_results_demean_scaled =  SAR44_results 
-  #SAR44_results = SAR44_results[2]
-  #SAR44_results = SAR44_results_demean[2]; sd=1
-  #SAR44_results_monah = SAR44_results
-
-
-  #sd
+#SAR_res[10]
