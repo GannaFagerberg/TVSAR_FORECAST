@@ -4,9 +4,7 @@
 # ==========================================================
 # Forecasting from posterior (MultiSAR with SV / SVDSP)
 # ==========================================================
-
 @inline true_f(x) = exp(min(x, 700.0))
-
 
 function PredLocalMultiSAR_SV_gr(
     nPredPerIter,
@@ -107,7 +105,6 @@ function PredLocalMultiSAR_SV_gr(
         nIter * nPredPerIter
     )
 
-
     # ========================================================
     # Build SAR cache once
     # ========================================================
@@ -140,7 +137,6 @@ function PredLocalMultiSAR_SV_gr(
 
     ν_std = zeros(Float64, nInnov)
     Δθ    = zeros(Float64, nInnov)
-
 
     # ========================================================
     # Posterior loop

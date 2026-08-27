@@ -27,7 +27,8 @@ x = x_detrend
 T = length(x)
 # plot(x)
 # T / (30 * 24)
-
+#120*30 * 24
+#
 ############################################################
 # Model Specification
 ############################################################
@@ -49,6 +50,8 @@ nPerGroup = 24*30
 
 use_fourier = false # have nor embedded here yet
 scaled      = false
+
+fisher_informed_prior_to = false
 
 ############################################################
 # Intercept Dynamics and Starting column
@@ -80,8 +83,8 @@ elseif model_type == :SARMA
 
 elseif model_type == :SAR
 
-    season = s1 = s2 = [1, 24, 24*7]
-    p      = p1 = p2 = [2, 2, 2]
+    season = s1 = s2 = [1, 24, 24*7, 24*364]
+    p      = p1 = p2 = [1, 1, 1, 1]
     pFit   = sum(p1)
 
 else
@@ -341,7 +344,7 @@ end
 μ₀ = zeros(nLags)
 
 if INTERCEPT && model_type == :SMA
-    μ₀[1] = mean(Y[1:10])
+    μ₀[1] = mean(Y[1:100])
 end
 
 # ============================================================
@@ -523,8 +526,8 @@ nCalibScale = 1000
 #scaling      = :none
 
 #scaling   = :none
-#scaling   = :full
-scaling    = :diag
+scaling   = :full
+#scaling    = :diag
 #scaling   = :fulllocal
 #scaling   = :diaglocal
 

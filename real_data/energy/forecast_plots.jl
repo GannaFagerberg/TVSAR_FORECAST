@@ -3,7 +3,7 @@
 ############################################################
 
 nPerGroup_fit = nPerGroup
-g_new  = 1
+g_new         = 1
 
 T      = length(y_g)
 season = s1
@@ -15,7 +15,7 @@ statTrans    = ztrans
 
 log_transform = true
 
-if algoSettings.scale == :none
+if algoSettings.scaling == :none
     scaling       = false
 else
     scaling       = true
@@ -49,7 +49,7 @@ activeLags = activeLags_ar
 if scaling
     S_T = copy(SAR_res[10])
 
-    if !normalization
+    if !algoSettings.normalization
         S_T .*= sqrt(nPerGroup_fit / g_new)
     end
 end

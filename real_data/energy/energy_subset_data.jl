@@ -12,9 +12,31 @@ df = CSV.read(
 # ============================================================
 df_train = select_period(
     df,
-    DateTime(2001, 1, 9, 2),
-    DateTime(2005, 12, 14, 3)
+    #DateTime(2001, 1, 9, 2),
+    #DateTime(2005, 12, 14, 3)
+
 )
+
+g = 24 * 30
+
+df_train_full = select_period(
+    df,
+    DateTime(2001, 1, 9, 2),
+    DateTime(2010, 12, 14, 3)
+)
+
+# Largest number of observations divisible by g
+n_use = fld(nrow(df_train_full), g) * g
+
+# Keep complete groups only
+df_train = df_train_full[1:n_use, :]
+
+@show nrow(df_train)
+@show nrow(df_train) ÷ g
+@show df_train.datetime[1]
+@show df_train.datetime[end]
+
+@assert nrow(df_train) % g == 0
 
 #timestamp_train[1,:]
 data_train      = df_train.demand_VIC
@@ -24,11 +46,30 @@ timestamp_train = df_train.datetime
 # Test data: next 7 days = 24*7 hours
 # ============================================================
 
+#df_test = select_period(
+    #df,
+    #DateTime(2005, 12, 14, 4),
+    #DateTime(2005, 12, 21, 3)
+#)
+
+# ============================================================
+# Test period: immediately after training period
+# ============================================================
+
+test_start = df_train.datetime[end] + Hour(1)
+test_end   = test_start + Day(7) - Hour(1)
+
 df_test = select_period(
     df,
-    DateTime(2005, 12, 14, 4),
-    DateTime(2005, 12, 21, 3)
+    test_start,
+    test_end
 )
+
+@show test_start
+@show test_end
+@show nrow(df_test)
+
+@assert nrow(df_test) == 24 * 7
 
 y_test_raw    = df_test.demand_VIC
 timestamp_test = df_test.datetime
@@ -47,6 +88,7 @@ x_detrend = (xlog .- train_mean)
 #43200/(24*30)
 #24*30*60=43200
 #length(x_detrend)-43200
+
 y_test = log.(y_test_raw) .- train_mean
 #.- train_mean
 
