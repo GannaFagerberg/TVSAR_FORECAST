@@ -96,11 +96,10 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
     # ==================================================
     # Algorithm settings
     # ==================================================
-    nBurn, nIter, INTERCEPT, resid_label,
-    method_label, model_type,
+    nBurn, nIter, INTERCEPT, resid_label,method_label, model_type,
     SAR_conditional, obs_var_type , state_var_type, ma_regressor_type,
     clipped_partials,p_threshold, presample_AR,presample_MA,scaling,
-    FisherInfo,normalization,fixed_scaling,nCalibScale = algoSettings 
+    FisherInfo,normalization,fixed_scaling,nCalibScale,freeze_iter  = algoSettings 
 
     # ==================================================
     # Model settings
@@ -168,7 +167,7 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
     ξ      = ones(T, nLags)
     ϕpost  = zeros(nLags,  nThin)
     μpost  = zeros(nLags,  nThin)
-    intercept_true = zeros(nThin, T_all )
+    #intercept_true = zeros(nThin, T_all )
     
     ϕ = fill(ϕ₀, nLags)
     S  = zeros(Int, T, nLags)
@@ -226,7 +225,12 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
     θpost  = zeros(T, nLags,  nThin)
 
     if obs_var_type in (:SV, :SVDSP)
-        σₑpost = zeros(T_all, nThin)
+        if nPerGroup>1
+            σₑpost = zeros(T, nThin) 
+        else
+            σₑpost = zeros(T_all, nThin)
+        end
+       
     else
         σₑpost = zeros(nThin)
     end
@@ -262,9 +266,15 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
         residuals = fill(0.0, T_all)
         errors    = fill(0.0, T_all + p_max[2])
 
-        freeze_iter = 1000
+        #freeze_iter = 1000
         errors_med  = zeros(T_all + p_max[2], freeze_iter)
-        errors_mx   = zeros(T_all + p_max[2], 1, freeze_iter)
+        errors_mx  = reshape(
+            errors_med,
+            T_all + p_max[2],
+            1,
+            freeze_iter
+        )
+
         Z_fixed     = nothing
 
 
@@ -273,8 +283,14 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
         σ0 = σₑ[1]
         σy = σₑ[1]^2
 
-        Z_ar = Z[:, 1:length(activeLags_ar)]
-        Z_ma = Z[:, length(activeLags_ar)+1:total_params]
+        ar_zcols = 1:length(activeLags_ar)
+        ma_zcols = (length(activeLags_ar)+1):total_params
+
+        Z_ar = copy(@view Z[:, ar_zcols])
+        Z_ma = copy(@view Z[:, ma_zcols])
+
+        #Z_ar = Z[:, 1:length(activeLags_ar)]
+        #Z_ma = Z[:, length(activeLags_ar)+1:total_params]
 
         σy = var(@view Y[1:min(end, 30)])
 
@@ -294,8 +310,13 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
         ma_cols = (startcol + nθ_ar) : (startcol + nθ_ar + nθ_ma - 1)
 
         freeze_iter = 1000
-        errors_med  = zeros(T_all + p_max[2], freeze_iter)
-        errors_mx   = zeros(T_all + p_max[2], 1, freeze_iter)
+        errors_med = zeros(T_all + p_max[2], freeze_iter)
+        errors_mx  = reshape(
+            errors_med,
+            T_all + p_max[2],
+            1,
+            freeze_iter
+        )
         Z_fixed     = nothing
 
 
@@ -510,14 +531,6 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
             pFit;
             T = Float64
         )
-
-        # Combined SARMA design matrix
-        Z = similar(
-            Z_ar,
-            size(Z_ar, 1),
-            size(Z_ar, 2) + size(Z_ma, 2)
-        )
-
     end
 
 
@@ -551,13 +564,15 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
     tmp_mat  = zeros(nLags, nLags)
     tmp_mat2 = zeros(nLags, nLags)
 
+ 
+    if scaling == :full || scaling == :fulllocal ||scaling == :diag || scaling == :diaglocal || scaling == :full_global 
+        
     # ==================================================
     # SCALING - now only for SAR!!!
     # ==================================================
     Svec = zeros(nLags, nLags, T) # Storage for scaling matrices
 
-    if scaling == :full || scaling == :fulllocal ||scaling == :diag || scaling == :diaglocal || scaling == :full_global 
-        
+
         println("Calibrating Scaling matrix from Laplace with no scaling")
 
         algoSettingsCalibrate = (; algoSettings..., scaling=:none, nIter=nCalibScale,
@@ -691,37 +706,37 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
                     Svec[i, i, t] = sqrt(FIinv[i, i] / scale)
                 end
             end
+
+        # Define the scaling matrix
+        ScaleMat =
+            if fixed_scaling
+                (par, μ, t) -> Svec[:, :, t]
+            elseif scaling == :full
+                (par, μ, t) -> sqrt(inv(Symmetric(groupSizes[t] * FisherInfo(par, μ, t) /T_all)))
+            elseif scaling == :diag
+                (par, μ, t) -> Diagonal(sqrt(inv(Symmetric(groupSizes[t] * FisherInfo(par, μ, t) / T_all))))
+            elseif scaling == :fulllocal
+                (par, μ, t) -> sqrt(pinv(Symmetric(FisherInfo(par, μ, t))))
+            elseif scaling == :diaglocal
+                (par, μ, t) -> Diagonal(sqrt(pinv(Symmetric(FisherInfo(par, μ, t)))))
+            elseif scaling == :none
+                (par, μ, t) -> I(nState)
+            else
+                error("Invalid scaling option. Choose :full, :diag,     
+                    :fulllocal, diaglocal or :none.")
+            end
+
         end
 
-        # Scaling-adjusted prior on μ
-        #scalingFactor_avg = diag(mean(Svec, dims = 3)[:,:,1])
-        #m₀ = m₀ - 2*log.(scalingFactor_avg)
-        #priorSettings = (; priorSettings..., m₀ = m₀);
-
-        #println("Average scaling matrix:")
-        #println(mean(Svec, dims = 3)[:,:,1])
-        #println("Adjusted m₀ = $(m₀)")
-    end
-
-    # Define the scaling matrix
-     ScaleMat =
-        if fixed_scaling
-            (par, μ, t) -> Svec[:, :, t]
-        elseif scaling == :full
-            (par, μ, t) -> sqrt(inv(Symmetric(groupSizes[t] * FisherInfo(par, μ, t) /T_all)))
-        elseif scaling == :diag
-            (par, μ, t) -> Diagonal(sqrt(inv(Symmetric(groupSizes[t] * FisherInfo(par, μ, t) / T_all))))
-        elseif scaling == :fulllocal
-            (par, μ, t) -> sqrt(pinv(Symmetric(FisherInfo(par, μ, t))))
-        elseif scaling == :diaglocal
-            (par, μ, t) -> Diagonal(sqrt(pinv(Symmetric(FisherInfo(par, μ, t)))))
-        elseif scaling == :none
-            (par, μ, t) -> I(nState)
-        else
-            error("Invalid scaling option. Choose :full, :diag,     
-                :fulllocal, diaglocal or :none.")
         end
 
+
+        if model_type in (:SAR, :SMA)
+            cache_use =
+                model_type == :SAR ? cache_ar :
+                model_type == :SMA ? cache_ma :
+                error("Invalid model type")
+        end
 
 
     ######
@@ -784,7 +799,7 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
             startcol = startcol,
             INTERCEPT=INTERCEPT,
             negative_signs = model_type == :SAR,
-            cache = cache_ar,
+            cache = cache_use,
             ztrans = ztrans,
             clipped_partials = clipped_partials,
             p_threshold = p_threshold,
@@ -808,7 +823,7 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
     # Standardize state innovations by Fisher scaling
     # omega_t <- S_t^{-1} omega_t
     # --------------------------------------------------
-    if scaling !== :none
+    if scaling != :none
 
         tmp = similar(view(omega, 1, :))
 
@@ -939,7 +954,6 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
             T_all
         )
 
-
         # --------------------------------------------------------
         # AR presample stage
         # --------------------------------------------------------
@@ -983,6 +997,161 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
         # Learn MA regressors, then freeze
         # --------------------------------------------------------
 
+        # ==========================================================
+        # MA regressor construction
+        # ==========================================================
+
+        obs_ma = copy(Y)
+        @inbounds for t in 1:T_all# t=1
+            obs_ma[t] -= dot(@view(Z_ar[t, :]), @view(ϕ_expanded[:, t]))
+        end
+
+        if ma_regressor_type == :median_freeze
+
+            # ------------------------------------------------------
+            # Phase 1: ordinary/current-error MA reconstruction
+            # ------------------------------------------------------
+            if i <= freeze_iter
+
+                errors_reg = build_MA_errors_banded(
+                    errors,
+                    obs_ma,
+                    state,
+                    ψ_expanded,
+                    activeLags_ma,
+                    p2,
+                    s2,
+                    p_max,
+                    σₑ²,
+                    σ0,
+                    T_use,
+                    nPerGroup;
+                    ws_sma = ws_sma,
+                    INTERCEPT = INTERCEPT,
+                    ztrans = ztrans,
+                    presample_mode = presample_MA,
+                    use_σ0_for_presample = true
+                )
+
+                # Ordinary MA regressors based on current errors
+                _, Z_ma, _ = SetupARReg_active(
+                    errors_reg,
+                    activeLags_ma
+                )
+
+                # Current reconstructed errors
+                residuals .= errors_reg[maxlag_ma+1:end]
+
+            # ------------------------------------------------------
+            # Phase 2: Z_ma is already frozen at median-error design
+            # ------------------------------------------------------
+            else
+
+                compute_conditional_mean!(
+                    cond_mean,
+                    Z_ma,
+                    ψ_expanded,
+                    state,
+                    group_map_T;
+                    INTERCEPT = INTERCEPT
+                )
+
+                compute_residuals!(
+                    residuals,
+                    obs_ma,
+                    cond_mean
+                )
+            end
+
+
+        elseif ma_regressor_type == :current
+
+            # ------------------------------------------------------
+            # Always use current reconstructed errors
+            # ------------------------------------------------------
+
+            errors_reg = build_MA_errors_banded(
+                errors,
+                obs_ma,
+                state,
+                ψ_expanded,
+                activeLags_ma,
+                p2,
+                s2,
+                p_max,
+                σₑ²,
+                σ0,
+                T_use,
+                nPerGroup;
+                ws_sma = ws_sma,
+                INTERCEPT = INTERCEPT,
+                ztrans = ztrans,
+                presample_mode = presample_MA,
+                use_σ0_for_presample = true
+            )
+
+            _, Z_ma, _ = SetupARReg_active(
+                errors_reg,
+                activeLags_ma
+            )
+
+            residuals .= errors_reg[maxlag_ma+1:end]
+
+        else
+
+            error("ma_regressor_type must be :median_freeze or :current")
+
+        end
+
+
+        # ------------------------------------------------------
+        # Recombine AR and MA design matrices
+        # ------------------------------------------------------
+        @views begin
+            Z[:, ar_zcols] .= Z_ar
+            Z[:, ma_zcols] .= Z_ma
+        end
+
+   elseif model_type == :SMA
+
+    # ========================================================
+    # SMA
+    # ========================================================
+
+    # --------------------------------------------------------
+    # Expand MA coefficients
+    # --------------------------------------------------------
+
+    @inbounds Threads.@threads for t in 1:T
+        row = view(state, t+1, startcol:stopcol)
+        out = view(ψ_mat, :, t)
+
+        MultiSARMAtoReg_cached!(
+            out,
+            row,
+            cache_ma;
+            ztrans = ztrans,
+            negative_signs = false
+        )
+    end
+
+    expand_grouped_states_fast!(
+        ψ_expanded,
+        ψ_mat,
+        nPerGroup,
+        T_all
+    )
+
+
+    # ========================================================
+    # MA regressor construction
+    # ========================================================
+
+    if ma_regressor_type == :median_freeze
+
+        # ----------------------------------------------------
+        # Phase 1: ordinary/current-error algorithm
+        # ----------------------------------------------------
         if i <= freeze_iter
 
             errors_reg = build_MA_errors_banded(
@@ -1001,66 +1170,29 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
                 ws_sma = ws_sma,
                 INTERCEPT = INTERCEPT,
                 ztrans = ztrans,
-                presample_mode = :posterior,
+                presample_mode = presample_MA,
                 use_σ0_for_presample = true
             )
 
-            # Store current reconstructed MA-error path
-            errors_med[:, i] .= errors_reg
-
-            # Running pointwise median
-            med_error = dropdims(
-                median(
-                    @view(errors_med[:, 1:i]),
-                    dims = 2
-                );
-                dims = 2
-            )
-
-            # MA regressors from median error path
-            _, Z_MA, _ = SetupARReg_active(
-                med_error,
+            # Ordinary MA regressors based on current errors
+            _, Z, _ = SetupARReg_active(
+                errors_reg,
                 activeLags_ma
             )
 
-            @assert size(Z_MA, 1) == size(Z_ar, 1)
-
-            # Complete SARMA design
-            n_ar = size(Z_ar, 2)
-
-            @views Z[:, 1:n_ar]     .= Z_ar
-            @views Z[:, n_ar+1:end] .= Z_MA
-
-            # Keep current MA design for next AR presample step
-            Z_ma .= Z_MA
-
-            # Freeze MA design
-            if i == freeze_iter
-                Z_fixed = copy(Z_MA)
-            end
-
-            # Current reconstructed error realization
+            # Current reconstructed errors for variance update
             residuals .= errors_reg[maxlag_ma+1:end]
 
+
+        # ----------------------------------------------------
+        # Phase 2: Z is already frozen at median-error design
+        # ----------------------------------------------------
         else
-
-            # ----------------------------------------------------
-            # Fixed MA design
-            # ----------------------------------------------------
-
-            @assert size(Z_fixed, 1) == size(Z_ar, 1)
-
-            n_ar = size(Z_ar, 2)
-
-            @views Z[:, 1:n_ar]     .= Z_ar
-            @views Z[:, n_ar+1:end] .= Z_fixed
-
-            Z_ma .= Z_fixed
 
             compute_conditional_mean!(
                 cond_mean,
                 Z,
-                vcat(ϕ_expanded, ψ_expanded),
+                ψ_expanded,
                 state,
                 group_map_T;
                 INTERCEPT = INTERCEPT
@@ -1074,128 +1206,11 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
         end
 
 
-    elseif model_type == :SMA
-
-        # ========================================================
-        # SMA
-        # ========================================================
-
-        # --------------------------------------------------------
-        # Expand MA coefficients
-        # --------------------------------------------------------
-
-        @inbounds Threads.@threads for t in 1:T
-            row = view(state, t+1, startcol:stopcol)
-            out = view(ψ_mat, :, t)
-
-            MultiSARMAtoReg_cached!(
-                out,
-                row,
-                cache_ma;
-                ztrans = ztrans,
-                negative_signs = false
-            )
-        end
-
-        expand_grouped_states_fast!(
-            ψ_expanded,
-            ψ_mat,
-            nPerGroup,
-            T_all
-        )
-
-
-        # --------------------------------------------------------
-        # Learn MA regressors, then freeze
-        # --------------------------------------------------------
-
-        # ==========================================================
-    # MA regressor construction
-    # ==========================================================
-
-    if ma_regressor_type == :median_freeze
-
-        # ------------------------------------------------------
-        # Median trick: learn Z, then freeze
-        # ------------------------------------------------------
-
-        if i <= freeze_iter
-
-            errors_reg = build_MA_errors_banded(
-                    errors,
-                    Y,
-                    state,
-                    ψ_expanded,
-                    activeLags_ma,
-                    p2,
-                    s2,
-                    p_max,
-                    σₑ²,
-                    σ0,
-                    T_use,
-                    nPerGroup;
-                    ws_sma = ws_sma,
-                    INTERCEPT = INTERCEPT,
-                    ztrans = ztrans,
-                    presample_mode = presample_MA,
-                    use_σ0_for_presample = true
-                )
-
-                # Store current reconstructed error path
-                errors_med[:, i] .= errors_reg
-
-                # Running pointwise median
-                med_error = dropdims(
-                    median(
-                        @view(errors_med[:, 1:i]),
-                        dims = 2
-                    );
-                    dims = 2
-                )
-
-                # Build Z from median error path
-                _, Z_MA, _ = SetupARReg_active(
-                    med_error,
-                    activeLags_ma
-                )
-
-                Z .= Z_MA
-
-                # Freeze design
-                if i == freeze_iter
-                    Z_fixed = copy(Z_MA)
-                end
-
-                # Current reconstructed errors
-                residuals .= errors_reg[maxlag_ma+1:end]
-
-            else
-
-                # Fixed Z after adaptation
-                Z .= Z_fixed
-
-                compute_conditional_mean!(
-                    cond_mean,
-                    Z,
-                    ψ_expanded,
-                    state,
-                    group_map_T;
-                    INTERCEPT = INTERCEPT
-                )
-
-                compute_residuals!(
-                    residuals,
-                    Y,
-                    cond_mean
-                )
-            end
-
-
     elseif ma_regressor_type == :current
 
-        # ------------------------------------------------------
-        # Standard approach: use current reconstructed errors
-        # ------------------------------------------------------
+        # ----------------------------------------------------
+        # Always use current reconstructed errors
+        # ----------------------------------------------------
 
         errors_reg = build_MA_errors_banded(
             errors,
@@ -1217,15 +1232,11 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
             use_σ0_for_presample = true
         )
 
-        # Build Z directly from current error path
-        _, Z_MA, _ = SetupARReg_active(
+        _, Z, _ = SetupARReg_active(
             errors_reg,
             activeLags_ma
         )
 
-        Z .= Z_MA
-
-        # Current reconstructed errors
         residuals .= errors_reg[maxlag_ma+1:end]
 
 
@@ -1236,7 +1247,6 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
         )
 
     end
-
 
     elseif model_type == :SAR
 
@@ -1326,6 +1336,45 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
 
     end
 
+    # ============================================================
+    # Store MA errors during adaptation and freeze median design
+    # ============================================================
+
+    if model_type in (:SMA, :SARMA) &&
+        ma_regressor_type == :median_freeze &&
+        i <= freeze_iter
+
+            @views errors_med[:, i] .= errors_reg
+
+            if i == freeze_iter
+
+                med_error = vec(
+                    median(
+                        @view(errors_med[:, 1:freeze_iter]),
+                        dims = 2
+                    )
+                )
+
+                if model_type == :SMA
+
+                    _, Z, _ = SetupARReg_active(
+                        med_error,
+                        activeLags_ma
+                    )
+
+                elseif model_type == :SARMA
+
+                    _, Z_ma, _ = SetupARReg_active(
+                        med_error,
+                        activeLags_ma
+                    )
+
+                    # Put frozen MA design into combined SARMA Z
+                    @views Z[:, ma_zcols] .= Z_ma
+
+                end
+            end
+        end
 
     # ============================================================
     # Recompute Cargs
@@ -1416,26 +1465,14 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
             beta_sigma,
             residuals
         )
-
         σₑ = fill(σₑ, T_all, 1)
-
-
     else
-
         error("obs_var_type must be :SV, :SVDSP, or :static")
-
     end
 
     # ==================================================
     # Store draws
     # ==================================================
-
-    # ==================================================
-    # Store MA errors during adaptation
-    # ==================================================
-    if model_type in (:SMA, :SARMA) && i <= freeze_iter
-        errors_mx[:, :, i] .= errors_reg
-    end
 
     if i > nBurn && ((i - nBurn) % thin_factor == 0)
 
@@ -1454,7 +1491,7 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
             if nPerGroup > 1
                 σₑpost[:, thin_idx] .= σₑ
             else
-                σₑpost[:, thin_idx] .= σₑ
+                σₑpost[:, thin_idx] .= σₑ_g
             end
 
         else
@@ -1547,11 +1584,14 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
                 return θpost, Hpost, σₑpost,
                         ϕpost, μpost,
                         μ̃post, ϕ̃post, h̃post, σ̄²ₙpost,
-                        y_mx, static_state_var, intercept_true
+                        y_mx, static_state_var
+                        #intercept_true
 
             else
 
-                return θpost, Hpost, σₑpost,ϕpost, μpost,y_mx, static_state_var, cond_mean_post, intercept_true, Svec[:,:,T]
+                return θpost, Hpost, σₑpost,ϕpost, μpost,y_mx, static_state_var, cond_mean_post
+                #intercept_true, 
+                #Svec[:,:,T]
             end
 
         else
@@ -1580,7 +1620,7 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
 
     end
 
-    end
+end
 
 
     

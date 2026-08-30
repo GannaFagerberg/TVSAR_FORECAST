@@ -1,16 +1,15 @@
 #!/bin/bash -l
 
 #SBATCH -A naiss2026-4-20
-#SBATCH -J TVSAR_select
-#SBATCH -t 4:00:00
+#SBATCH -J TVSAR_collect
+#SBATCH -t 0:30:00
 #SBATCH -c 1
-#SBATCH --mem=32G
-#SBATCH --array=1-80
+#SBATCH --mem=8G
 
 #SBATCH --mail-user=ganna.fagerberg@stat.su.se
-#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-type=BEGIN,END,FAIL
 
-#SBATCH -o /home/x_ganfa/slurm_logs/%A_%a.out
+#SBATCH -o /home/x_ganfa/slurm_logs/%A_collect.out
 
 
 ############################################################
@@ -20,11 +19,10 @@
 module load julia/1.10.2-bdist
 module load R/4.4.0-hpc1-gcc-11.3.0-bare
 
-# Needed by RCall
 export R_HOME="$(R RHOME)"
 export LD_LIBRARY_PATH="${R_HOME}/lib:${LD_LIBRARY_PATH}"
 
-# Needed to find the user-installed R package `forecast`
+# Your user-installed R packages
 export R_LIBS_USER="/home/x_ganfa/R/4.4.0-library"
 
 
@@ -42,10 +40,10 @@ RESULTS_DIR="/home/x_ganfa/TVSAR_results"
 
 
 ############################################################
-# 3. Experiment settings
+# 3. Collect experiment results
 ############################################################
 
-export TVSAR_ACTION="run"
+export TVSAR_ACTION="collect"
 export TVSAR_RUN_SIZE="full"
 
 export TVSAR_DATA_FILE="${DATA_FILE}"
@@ -58,16 +56,15 @@ export TVSAR_RESULTS_DIR="${RESULTS_DIR}"
 
 echo "=============================================="
 echo "SLURM job ID       : ${SLURM_JOB_ID}"
-echo "SLURM array task   : ${SLURM_ARRAY_TASK_ID}"
+echo "ACTION             : ${TVSAR_ACTION}"
 echo "Project            : ${PROJECT_DIR}"
 echo "Script             : ${SCRIPT}"
-echo "Data               : ${DATA_FILE}"
 echo "Results            : ${RESULTS_DIR}"
 echo "=============================================="
 
 
 ############################################################
-# 5. Run Julia
+# 5. Run collector once
 ############################################################
 
 julia \

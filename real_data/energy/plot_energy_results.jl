@@ -23,7 +23,8 @@ T_group = size(SAR_res[1], 1)
 nPerGroup_fit = modelSettings.nPerGroup   # = 720
 
 # Data actually entering the model
-timestamp_model = timestamp_train[169:end]
+#timestamp_model = timestamp_train[169:end]
+timestamp_model = timestamp_train
 
 # Put each posterior state at midpoint of its 30-day estimation block
 idx_group = [
@@ -31,8 +32,7 @@ idx_group = [
     for g in 1:T_group
 ]
 
-time_ind = timestamp_model[idx_group]
-
+time_ind = timestamp_train[idx_group]
 years = unique(year.(time_ind))
 
 xticks_custom = (
@@ -462,7 +462,6 @@ elseif model_type == :SARMA
     )
 
 end
-
 
 # ==========================================================
 # MU / PHI DIAGNOSTICS

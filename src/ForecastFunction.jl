@@ -647,7 +647,7 @@ end
 # Safe exponential
 # ============================================================
 
-@inline true_f(x) = exp(min(x, 700.0))
+#@inline true_f(x) = exp(min(x, 700.0))
 
 function PredLocalMultiSAR_SV_gr_ref(
     nPredPerIter,

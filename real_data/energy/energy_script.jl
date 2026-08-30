@@ -4,8 +4,14 @@
 using Revise
 using PDMats
 using LinearAlgebra
-using TVSAR_FORECAST
 using Random
+using BandedMatrices
+
+
+#using Pkg
+#Pkg.activate(raw"C:\Users\Anna Fagerberg\JuliaPackages\TVSAR_FORECAST.jl")
+#using TVSAR_FORECAST 
+
 # ----------------------------------------------------------
 # Deterministic Fourier terms
 # ----------------------------------------------------------
@@ -34,8 +40,8 @@ T = length(x)
 ############################################################
 
 #model_type = :SMA
-model_type  = :SAR
-#model_type = :SARMA
+#model_type  = :SAR
+model_type = :SARMA
 
 SAR_conditional = model_type == :SAR ? false : false
 
@@ -71,20 +77,21 @@ startcol = INTERCEPT ? (intercept_dynamics == :ll ? 3 : 2) : 1
 
 if model_type == :SMA
 
-    season = s1 = s2 = [1, 12]
-    p      = p1 = p2 = [1, 5]
+    season = s1 = s2 = [1, 24, 24*7, 24*364]
+    p      = p1 = p2 = [2, 1, 1, 1]
     pFit   = sum(p2)
 
 elseif model_type == :SARMA
 
-    s1 = s2 = [1, 12]
-    p1 = p2 = [1, 1]
+    s1 = s2 = [1, 24, 24*7]
+    p1 = [2, 1, 1]
+    p2 = [1, 1, 1]
     pFit = sum(p1) + sum(p2)
 
 elseif model_type == :SAR
 
-    season = s1 = s2 = [1, 24, 24*7, 24*364]
-    p      = p1 = p2 = [1, 1, 1, 1]
+    season = s1 = s2 = [1, 24, 24*7]
+    p      = p1 = p2 = [2, 1, 1]
     pFit   = sum(p1)
 
 else
@@ -313,8 +320,8 @@ else
 end
 
 ### Settings
-nBurn = 2000
-nIter = 2000
+nBurn = 1000
+nIter = 1000
 
 ###############
 # FILTER TYPE
@@ -330,7 +337,7 @@ filtering_methods = ("iekf", "iekfl", "iukf", "iukfl", "iplf", "diplf")
 kf_method         = filtering_methods[1]
 
 # Variance components
-var_mat = fill(0.3^2, nLags)   # MA coeffs unchanged
+var_mat = fill(0.25^2, nLags)   # MA coeffs unchanged
 
 if INTERCEPT
     var_mat[1] = 1.0^2     # level c₀ (weak prior)
@@ -352,10 +359,11 @@ end
 # ============================================================
 
 if fisher_informed_prior_to
-    n_init = 500
+    
+    n_init = T
 
     priorparam_μ = mean(Y[1:n_init])
-    n₀ = 1.0
+    n₀ = nPerGroup
 
     Z_init = @view Z[1:n_init, :]
 
@@ -506,11 +514,10 @@ modelSettings = (
             obs_var_type   = obs_var_type ,     # :SV, :SVDSP, :static
             state_var_type = state_var_type ,    # :DSP, :static
 
-            #ma_regressor_type = :current # :current
-            ma_regressor_type = :median_freeze,
+            ma_regressor_type = :median_freeze, #:current # :current
             
             clipped_partials = clipped_partials,
-            p_threshold = p_threshold,
+            p_threshold      = p_threshold,
 
             presample_AR = :recursive, # :posterior
             presample_MA = :simple,    # :posterior
@@ -519,14 +526,15 @@ modelSettings = (
             FisherInfo   = nothing,    # Scaling for the state
             normalization = true,
             fixed_scaling = true,
-            nCalibScale   = nothing
+            nCalibScale   = nothing,
+            freeze_iter   = 1000
             )
         
 nCalibScale = 1000
 #scaling      = :none
 
 #scaling   = :none
-scaling   = :full
+scaling   = :none
 #scaling    = :diag
 #scaling   = :fulllocal
 #scaling   = :diaglocal

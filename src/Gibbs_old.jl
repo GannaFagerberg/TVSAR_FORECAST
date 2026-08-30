@@ -77,6 +77,1562 @@ end
 
 
 ### Gibbs
+
+
+
+function GibbsSamplerTVSARMA_full_ref(y_g, Y, priorSettings, modelSettings, algoSettings)
+
+    # ==================================================
+    # Dimensions
+    # ==================================================
+    T = length(y_g)
+
+    #intercept_dynamics = :ll   # or :rw
+    #intercept_dynamics = INTERCEPT ? :ll : :none
+
+    # ==================================================
+    # Prior settings
+    # ==================================================
+    ϕ₀, κ₀, m₀, σ₀, ν₀, ψ₀, μ₀, Σ₀,
+    σₑ, alpha_sigma, beta_sigma, alpha_sigma_hat,
+    α_ukf, β_ukf, κ_ukf, x_mean = priorSettings
+
+    # ==================================================
+    # Algorithm settings
+    # ==================================================
+    nBurn, nIter, INTERCEPT, resid_label,
+    method_label, model_type,
+    SAR_conditional, obs_var_type , state_var_type, ma_regressor_type,
+    clipped_partials,p_threshold, presample_AR,presample_MA,scaling,
+    FisherInfo,normalization,fixed_scaling,nCalibScale = algoSettings 
+
+    # ==================================================
+    # Model settings
+    # ==================================================
+    nPerGroup, s1, p1, s2, p2, p_max, nLags, iterations,
+    Cargs, Z, activeLags_ma, activeLags_ar, 
+    cache_ma, cache_ar, ztrans,
+    updateσₙ, nMixComp, α, β,
+    ϕ̄₀, κ̄₀, m̄₀, σ̄₀, ν̄₀, ψ̄₀,
+    ϕ̄v, μ̄v, σ̄²ₙ,
+    intercept_dynamics, T_use = modelSettings
+
+    # ==================================================
+    # Thinning
+    # ==================================================
+    thin_factor = 1
+    nPost = nIter - nBurn  # 13000 - 3000 = 10000
+    nThin = div(nPost, thin_factor)  # 10000 / 10 = 700  
+    thin_idx = 0
+
+    # ==================================================
+    # Intercept dynamics switch (NEW)
+    # ==================================================
+    # :rw -> old random-walk intercept
+    # :ll -> new local linear trend (second difference)
+    # set to :rw if you want the old behavior
+
+    # Number of state components used by intercept
+    nInterceptStates = INTERCEPT ? (intercept_dynamics === :ll ? 2 : 1) : 0
+
+    # ==================================================
+    # Derived dimensions
+    # ==================================================
+    T_all = T * nPerGroup
+
+    # startcol is now automatic and consistent everywhere
+    startcol = 1 + nInterceptStates
+    stopcol  = nLags
+
+    # ==================================================
+    # Initialize latent processes
+    # ==================================================
+    #δ = fill(0.0, nLags)
+
+    # ==================================================
+    # Log-χ² mixture approximation
+    # ==================================================
+    ω, m, v   = SetUpLogChi2Mixture(nMixComp, 1)
+    mixLogχ²₁ = prepare_logchi2_mix10(ω, m, v)
+
+    #mixLogχ²₁, m, v = SetUpLogChi2Mixture(nMixComp, 1) # Only 5 and 10 component supported
+    #S = zeros(Int, T, nLags)
+    postDist  = zeros(T, nMixComp)
+   
+    # ==================================================
+    # Initial latent state values
+    # ==================================================
+    σₑ = reshape(σₑ, :, 1)
+
+    μ  = fill(m₀, nLags)
+    H = fill(m₀, T, nLags)
+    H_prev = fill(m₀, T, nLags)
+
+    Hpost  = zeros(T, nLags,  nThin)
+    ξ      = ones(T, nLags)
+    ϕpost  = zeros(nLags,  nThin)
+    μpost  = zeros(nLags,  nThin)
+    #intercept_true = zeros(nThin, T_all )
+    
+    ϕ = fill(ϕ₀, nLags)
+    S  = zeros(Int, T, nLags)
+    σ²ₙ = fill(updateσₙ ? 1.0 : 1.0, nLags) ## Measurement noise scaling
+    
+    #scale_post  = zeros(nLags,  nThin)
+
+    if INTERCEPT && intercept_dynamics === :ll
+        # State ordering: [c_t, d_t, coefficients...]
+        # No stochastic volatility on level c_t
+        Hpost  = zeros(T, nLags-1,  nThin)
+        ϕpost  = zeros(nLags-1,  nThin)
+        μpost  = zeros(nLags-1,  nThin)
+
+        μ  = fill(m₀, nLags-1)
+        ϕ = fill(ϕ₀, nLags-1)
+        H = fill(m₀, T, nLags-1)
+
+        #if INTERCEPT
+        #H[:,1] .= -10 + log(l)
+        #end
+
+        ξ  = ones(T, nLags-1)
+        S  = zeros(Int, T, nLags-1)
+        σ²ₙ = fill(updateσₙ ? 1.0 : 1.0, nLags-1)
+    end
+
+    H̃     = H .- m₀
+    state = zeros(T + 1, nLags)
+
+    # ==================================================
+    # State transition matrix A (UPDATED)
+    # ==================================================
+    A = Matrix{Float64}(LinearAlgebra.I, nLags, nLags)
+
+    if INTERCEPT
+        if intercept_dynamics === :ll
+            # local linear trend:
+            # c_t = c_{t-1} + d_{t-1}
+            # d_t = d_{t-1}
+            A[1, 2] = 1.0
+        end
+        # :rw needs no change (identity already does it)
+    end
+
+    # ==================================================
+    # Control input (unchanged)
+    # ==================================================
+    B = zeros(nLags)
+    U = zeros(T, 1)
+
+    # ==================================================
+    # Storage for MCMC draws
+    # ==================================================
+    θpost  = zeros(T, nLags,  nThin)
+
+    if obs_var_type in (:SV, :SVDSP)
+        σₑpost = zeros(T_all, nThin)
+    else
+        σₑpost = zeros(nThin)
+    end
+
+    Σ_filt = zeros(T, nLags,  nThin)
+    Σ_pred = zeros(T, nLags,  nThin)
+    μ_filt = zeros(T, nLags,  nThin)
+    μ_pred = zeros(T, nLags,  nThin)
+
+    static_state_var = zeros(nLags,  nThin)
+
+    # ==================================================
+    # Remaining code: UNCHANGED
+    # ==================================================
+
+    total_params = size(Z, 2)
+    Cargs_raw = [Vector{Float64}(undef, total_params) for _ in 1:T_all] 
+    σₑ² = similar(σₑ)
+    Dᵩ = BandedMatrix(-1 => repeat([-ϕ[1]], T-1),0 => Ones(T))
+  
+    # ==================================================
+    # Observation equation setup
+    # ==================================================
+
+    if model_type == :SMA
+
+        σy = nothing
+        σ0 = σₑ[1]
+
+        ψ_mat      = Matrix{Float64}(undef, total_params, T)
+        ψ_expanded = Matrix{Float64}(undef, total_params, T_all)
+
+        residuals = fill(0.0, T_all)
+        errors    = fill(0.0, T_all + p_max[2])
+
+        freeze_iter = 1000
+        errors_med  = zeros(T_all + p_max[2], freeze_iter)
+        errors_mx   = zeros(T_all + p_max[2], 1, freeze_iter)
+        Z_fixed     = nothing
+
+
+    elseif model_type == :SARMA
+
+        σ0 = σₑ[1]
+        σy = σₑ[1]^2
+
+        Z_ar = Z[:, 1:length(activeLags_ar)]
+        Z_ma = Z[:, length(activeLags_ar)+1:total_params]
+
+        σy = var(@view Y[1:min(end, 30)])
+
+        errors = fill(0.0, T_all + p_max[2])
+        y_mx   = zeros(p_max[1], 1, nThin)
+
+        ϕ_mat      = Matrix{Float64}(undef, length(activeLags_ar), T)
+        ϕ_expanded = Matrix{Float64}(undef, length(activeLags_ar), T_all)
+
+        ψ_mat      = Matrix{Float64}(undef, length(activeLags_ma), T)
+        ψ_expanded = Matrix{Float64}(undef, length(activeLags_ma), T_all)
+
+        nθ_ar = sum(p1)
+        nθ_ma = sum(p2)
+
+        ar_cols = startcol : (startcol + nθ_ar - 1)
+        ma_cols = (startcol + nθ_ar) : (startcol + nθ_ar + nθ_ma - 1)
+
+        freeze_iter = 1000
+        errors_med  = zeros(T_all + p_max[2], freeze_iter)
+        errors_mx   = zeros(T_all + p_max[2], 1, freeze_iter)
+        Z_fixed     = nothing
+
+
+    elseif model_type == :SAR
+
+        σ0 = σₑ[1]
+
+        σy = Statistics.var(@view Y[1:min(end, 30)])
+
+        y_mx      = zeros(p_max[1], 1, nThin)
+        residuals = fill(0.0, T_all)
+
+        ϕ_mat      = Matrix{Float64}(undef, total_params, T)
+        ϕ_expanded = Matrix{Float64}(undef, total_params, T_all)
+
+
+    else
+
+        error("model_type must be :SAR, :SMA, or :SARMA")
+
+    end
+
+
+    # ==================================================
+    # Stochastic volatility buffers
+    # ==================================================
+    if obs_var_type in (:SV, :SVDSP)
+
+        pre_length = model_type == :SAR ? 0 : p_max[2]
+
+        h̄ = fill(m̄₀, T_all + pre_length)
+        h̃ = h̄ .- m̄₀
+
+        hstar = zeros((T_all + 1) + pre_length)
+        hstar .= m̄₀
+
+        ξ̄ = ones(T_all + pre_length)
+
+        postDistsv = zeros(T_all + pre_length, nMixComp)
+        Ssv        = zeros(Int, T_all + pre_length)
+
+        # Holders for SV parameters
+        μ̃post   = zeros(T, nThin)
+        ϕ̃post   = zeros(T, nThin)
+        σ̄²ₙpost = zeros(T, nThin)
+
+        h̃post = zeros(T_all, nThin)
+
+        # Allocate once outside Gibbs loop
+        σₑ_full = Vector{Float64}(undef, T_all)
+
+    end
+
+
+    # ==================================================
+    # Static state variance
+    # ==================================================
+
+    static_var = fill(0.0, nLags)
+
+    if state_var_type == :static
+        static_var .= exp.(H[1, :])
+    end
+
+
+    # ==================================================
+    # DSP buffers
+    # ==================================================
+
+    zprev_buf = zeros(T)
+    zcurr_buf = zeros(T)
+
+    prop_sd_phi = fill(0.05, nLags)
+    acc_phi     = zeros(Int, nLags)
+
+
+    # ==================================================
+    # AR / MA / ARMA buffers
+    # ==================================================
+
+    kl_ar = length(activeLags_ar)
+    kl_ma = length(activeLags_ma)
+
+    if model_type == :SAR
+
+        pFit = sum(p1)
+
+        p = p_max[1]
+
+        maxlag = p
+        kl     = length(activeLags_ar)
+
+        ws_presample = build_presample_workspace(
+            maxlag,
+            activeLags_ar
+        )
+
+        group_map = build_group_map(p,nPerGroup)
+
+        int_exp = zeros(Float64, p)
+        x0_buf  = zeros(Float64, p)
+        m0_buf  = zeros(Float64, p)
+
+        ws = IEKFWorkspace(
+            nLags,
+            nPerGroup,
+            kl,
+            pFit;
+            T = Float64
+        )
+
+
+    elseif model_type == :SMA
+
+        pFit = sum(p2)
+
+        q         = p_max[2]
+        maxlag_ma = maximum(activeLags_ma)
+        kl        = length(activeLags_ma)
+
+        ws_sma = build_SMA_workspace(q)
+
+        # SMA does not use AR presample buffers
+        int_exp = nothing
+        x0_buf  = nothing
+        m0_buf  = nothing
+
+        ws = IEKFWorkspace(
+            nLags,
+            nPerGroup,
+            kl,
+            pFit;
+            T = Float64
+        )
+
+
+    elseif model_type == :SARMA
+
+        #pFit = sum(p1)
+
+        maxlag_ma = maximum(activeLags_ma)
+
+        intercept_true = zeros(nThin, T)
+
+        nma = length(ma_cols)
+
+        if INTERCEPT
+            nar_inter = length(ar_cols) + 1
+            nar       = length(ar_cols)
+        else
+            nar       = length(ar_cols)
+            nar_inter = nar
+        end
+
+
+        # --------------------------------------------------
+        # AR buffers
+        # --------------------------------------------------
+
+        p     = p_max[1]
+        kl_ar = length(activeLags_ar)
+
+        ws_AR_presample = build_presample_workspace(
+            p,
+            activeLags_ar
+        )
+
+        group_map_ar = build_group_map(
+            p,
+            nPerGroup
+        )
+
+        int_exp = zeros(Float64, p)
+        x0_buf  = zeros(Float64, p)
+        m0_buf  = zeros(Float64, p)
+
+        ws_ar = IEKFWorkspace(
+            nar_inter,
+            nPerGroup,
+            kl_ar,
+            nar;
+            T = Float64
+        )
+
+
+        # --------------------------------------------------
+        # MA buffers
+        # --------------------------------------------------
+
+        q     = p_max[2]
+        kl_ma = length(activeLags_ma)
+
+        ws_sma = build_SMA_workspace(q)
+
+        ws_ma = IEKFWorkspace(
+            nma,
+            nPerGroup,
+            kl_ma,
+            nma;
+            T = Float64
+        )
+
+        # --------------------------------------------------
+        # Full SARMA workspace
+        # --------------------------------------------------
+
+        pFit = sum(p1) + sum(p2)
+        ws_sarma = IEKFWorkspace(
+            nLags,
+            nPerGroup,
+            kl_ar + kl_ma,
+            pFit;
+            T = Float64
+        )
+
+        # Combined SARMA design matrix
+        Z = similar(
+            Z_ar,
+            size(Z_ar, 1),
+            size(Z_ar, 2) + size(Z_ma, 2)
+        )
+
+    end
+
+
+    # ==================================================
+    # Common buffers
+    # ==================================================
+
+    cond_mean_post = zeros(Float64, T_all)
+    cond_mean      = zeros(Float64, T_all)
+    residuals      = zeros(Float64, T_all)
+
+    group_map_T = build_group_map(T_all,nPerGroup)
+
+    # ==================================================
+    # Temporary AR transformation buffers
+    # ==================================================
+
+    maxp = maximum(p1)
+
+    φtmp = zeros(Float64, maxp)
+    Ptmp = zeros(Float64, maxp)
+    ϕtmp = zeros(Float64, maxp, maxp)
+
+
+    # ==================================================
+    # Buffers for backward sampling
+    # ==================================================
+
+    KG_buf   = zeros(nLags, nLags)
+    tmp_vec  = zeros(nLags)
+    tmp_mat  = zeros(nLags, nLags)
+    tmp_mat2 = zeros(nLags, nLags)
+
+    # ==================================================
+    # SCALING - now only for SAR!!!
+    # ==================================================
+    Svec = zeros(nLags, nLags, T) # Storage for scaling matrices
+
+    if scaling == :full || scaling == :fulllocal ||scaling == :diag || scaling == :diaglocal || scaling == :full_global 
+        
+        println("Calibrating Scaling matrix from Laplace with no scaling")
+
+        algoSettingsCalibrate = (; algoSettings..., scaling=:none, nIter=nCalibScale,
+        nBurn=round(Int, 0.1 * nCalibScale), normalization=false, fixed_scaling=false)
+        priorSettings = (; priorSettings..., m₀ = m₀);
+
+        θpost0, _  = GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSettingsCalibrate)
+        mu_hat = zeros(eltype(θpost0), nLags)
+
+        ### Scaling based on all obs.
+        if scaling == :full || scaling == :fulllocal
+
+            for t in 1:T #t=1
+
+                # --------------------------------------------------
+                # Reference state at time t
+                # --------------------------------------------------
+                @views for j in eachindex(mu_hat)
+                    mu_hat[j] = median(θpost0[t, j, :])
+                end
+
+                # --------------------------------------------------
+                # Fisher information
+                # --------------------------------------------------
+                if scaling == :full
+
+                # Group-adjusted Fisher scaling
+                FI = Matrix(nPerGroup *
+                 FisherInfo_full_global_gaussian(
+                                mu_hat,
+                                σₑ[1]^2,
+                                Cargs,
+                                cache_ar,
+                                ws;
+                                INTERCEPT = INTERCEPT,
+                                startcol = startcol,
+                                ztrans = ztrans,
+                                negative_signs = true)/T_all)
+
+                else  # scaling == :fulllocal
+                    FI = Matrix(
+                             FisherInfo_full_global_gaussian(
+                                mu_hat,
+                                σₑ[1]^2,
+                                Cargs,
+                                cache_ar,
+                                ws;
+                                INTERCEPT = INTERCEPT,
+                                startcol = startcol,
+                                ztrans = ztrans,
+                                negative_signs = true))
+                        
+                end
+
+                # --------------------------------------------------
+                # Numerical regularization
+                # --------------------------------------------------
+                @inbounds for i in axes(FI, 1)
+                    FI[i, i] += eps()
+                end
+
+                # --------------------------------------------------
+                # Full inverse Fisher
+                # --------------------------------------------------
+                FIinv = try
+                    inv(Symmetric(FI))
+                catch
+                    @warn "Using pseudoinverse for Fisher information at t=$t"
+                    pinv(FI)
+                end
+
+                # --------------------------------------------------
+                # Optional trace normalization
+                # --------------------------------------------------
+                scale = normalization ? tr(FIinv) / nLags : 1.0
+
+                # --------------------------------------------------
+                # Symmetric full Fisher square root
+                # --------------------------------------------------
+                Svec[:, :, t] .= sqrt(Symmetric(FIinv / scale))
+            end
+
+        ### Scaling based on diagonal contributions only based on grouped contribution
+        elseif scaling == :diag || scaling == :diaglocal
+
+            for t in 1:T
+
+                @views for j in eachindex(mu_hat)
+                    mu_hat[j] = median(θpost0[t, j, :])
+                end
+
+                if scaling == :diag
+                    FI = Matrix(nPerGroup *
+                            FisherInfo_full_global_gaussian(
+                                mu_hat,
+                                σₑ[1]^2,
+                                Cargs,
+                                cache_ar,
+                                ws;
+                                INTERCEPT = INTERCEPT,
+                                startcol = startcol,
+                                ztrans = ztrans,
+                                negative_signs = true) / T_all)
+                else
+                    FI = Matrix(FisherInfo_full_global_gaussian(
+                                mu_hat,
+                                σₑ[1]^2,
+                                Cargs,
+                                cache_ar,
+                                ws;
+                                INTERCEPT = INTERCEPT,
+                                startcol = startcol,
+                                ztrans = ztrans,
+                                negative_signs = true))
+                end
+
+                @inbounds for i in axes(FI, 1)
+                    FI[i, i] += eps()
+                end
+
+                # Full inverse Fisher
+                FIinv = inv(Symmetric(FI))
+
+                # Remove common inverse-Fisher magnitude if requested
+                scale = normalization ? tr(FIinv) / nLags : 1.0
+
+                # Keep diagonal of the full inverse
+                Svec[:, :, t] .= 0.0
+
+                @inbounds for i in axes(FIinv, 1)
+                    Svec[i, i, t] = sqrt(FIinv[i, i] / scale)
+                end
+            end
+        end
+
+        # Scaling-adjusted prior on μ
+        #scalingFactor_avg = diag(mean(Svec, dims = 3)[:,:,1])
+        #m₀ = m₀ - 2*log.(scalingFactor_avg)
+        #priorSettings = (; priorSettings..., m₀ = m₀);
+
+        #println("Average scaling matrix:")
+        #println(mean(Svec, dims = 3)[:,:,1])
+        #println("Adjusted m₀ = $(m₀)")
+    end
+
+    # Define the scaling matrix
+     ScaleMat =
+        if fixed_scaling
+            (par, μ, t) -> Svec[:, :, t]
+        elseif scaling == :full
+            (par, μ, t) -> sqrt(inv(Symmetric(groupSizes[t] * FisherInfo(par, μ, t) /T_all)))
+        elseif scaling == :diag
+            (par, μ, t) -> Diagonal(sqrt(inv(Symmetric(groupSizes[t] * FisherInfo(par, μ, t) / T_all))))
+        elseif scaling == :fulllocal
+            (par, μ, t) -> sqrt(pinv(Symmetric(FisherInfo(par, μ, t))))
+        elseif scaling == :diaglocal
+            (par, μ, t) -> Diagonal(sqrt(pinv(Symmetric(FisherInfo(par, μ, t)))))
+        elseif scaling == :none
+            (par, μ, t) -> I(nState)
+        else
+            error("Invalid scaling option. Choose :full, :diag,     
+                :fulllocal, diaglocal or :none.")
+        end
+
+
+    cache_use =
+        model_type == :SAR ? cache_ar :
+        model_type == :SMA ? cache_ma :
+        error("Invalid model type")
+
+
+    ######
+    #LOOP
+    ######
+
+   for i in 1:nIter # i=1
+
+    # ==================================================
+    # Draw local level using FFBS
+    # ==================================================
+    
+    Σₙ = state_var_type == :DSP ? LogVol2Covs(H) : Vol2Covs(static_var)
+
+    if scaling != :none
+        Σₙ = apply_fisher_scaling(Σₙ, Svec)
+    end
+
+    # seems pretty fast and small allocation
+
+    # ==================================================
+    # Precompute σₑ² in-place (NO allocation)
+    # ==================================================
+    @inbounds @. σₑ² = σₑ .* σₑ
+   
+    # ==================================================
+    # Update the state
+    # ==================================================
+
+    Σₑ_g  = group_vector(σₑ², nPerGroup) #500-element Vector{Vector{Float64}}
+    #500-element Vector{Vector{Vector{Float64}}}:
+
+    if model_type == :SARMA
+
+         state = FFBSx_sarma(
+            U, y_g, A, B, Cargs, Σₑ_g, Σₙ, μ₀, Σ₀,
+            iterations, α_ukf, β_ukf, κ_ukf, ws_ar, ws_ma, ws_sarma, kl_ar,kl_ma;
+            resid_check = resid_label,
+            mode = method_label,
+            startcol = startcol,
+            INTERCEPT = INTERCEPT,
+            ar_cols = ar_cols,
+            ma_cols = ma_cols,
+            nar_inter = nar_inter,
+            cache_ar = cache_ar,
+            cache_ma = cache_ma,
+            ztrans = ztrans,
+            clipped_partials = clipped_partials,
+            p_threshold = p_threshold,
+            intercept_dynamics = intercept_dynamics
+        )
+        
+    else
+
+        state = FFBSx(
+            U, y_g, A, B,  Cargs, Σₑ_g, Σₙ, μ₀, Σ₀,
+            iterations, α_ukf, β_ukf, κ_ukf, ws;
+            resid_check = resid_label,
+            mode = method_label,
+            startcol = startcol,
+            INTERCEPT=INTERCEPT,
+            negative_signs = model_type == :SAR,
+            cache = cache_use,
+            ztrans = ztrans,
+            clipped_partials = clipped_partials,
+            p_threshold = p_threshold,
+            intercept_dynamics = intercept_dynamics,
+            scaled = false
+        )
+
+    end
+        
+    # ==================================================
+    # Update log-volatility evolution
+    # ==================================================
+    
+    if intercept_dynamics === :ll
+        omega = diff(state[:, 2:end], dims = 1)
+    else
+        omega = diff(state, dims = 1)  
+    end 
+
+    # --------------------------------------------------
+    # Standardize state innovations by Fisher scaling
+    # omega_t <- S_t^{-1} omega_t
+    # --------------------------------------------------
+    if scaling != :none
+
+        tmp = similar(view(omega, 1, :))
+
+        for t in 1:T
+
+            if intercept_dynamics === :ll
+
+                # c_t itself has been removed from omega,
+                # so use the corresponding Fisher submatrix
+                St = @view Svec[2:end, 2:end, t]
+
+                tmp .= St \ @view(omega[t, :])
+
+            else
+
+                St = @view Svec[:, :, t]
+
+                tmp .= St \ @view(omega[t, :])
+            end
+
+            @view(omega[t, :]) .= tmp
+        end
+    end
+
+    if state_var_type == :DSP
+
+        if nPerGroup == 1
+
+            update_dsp!(
+                omega, S, H, H̃, ξ, ϕ, μ, σ²ₙ,
+                ϕ₀, κ₀, m₀, σ₀, ν₀, ψ₀,
+                mixLogχ²₁, m, v, postDist, Dᵩ;
+                offset = eps(),
+                updateσₙ = updateσₙ,
+                α = α,
+                β = β
+            )
+
+        else
+
+            update_dsp_grouped!(
+                omega, S, H, H̃, ξ, ϕ, μ, σ²ₙ,
+                ϕ₀, κ₀, m₀, σ₀, ν₀, ψ₀,
+                mixLogχ²₁, m, v, postDist, Dᵩ;
+                g = nPerGroup,
+                zprev_buf = zprev_buf,
+                zcurr_buf = zcurr_buf,
+                prop_sd_phi = prop_sd_phi,
+                acc_phi = acc_phi,
+                updateσₙ = updateσₙ,
+                α = α,
+                β = β,
+                INTERCEPT = INTERCEPT
+            )
+
+        end
+
+    else
+
+        ### Var.
+        static_var .= compute_noise_SARMA(
+            alpha_sigma_hat,
+            beta_sigma,
+            omega
+        )
+
+    end
+
+    # ============================================================
+    # Infer errors / construct regressors
+    # model_type ∈ (:SAR, :SMA, :SARMA)
+    # ============================================================
+
+    if model_type == :SARMA
+
+        # ========================================================
+        # SARMA
+        # ========================================================
+
+        # --------------------------------------------------------
+        # Expand AR coefficients
+        # --------------------------------------------------------
+
+        @inbounds Threads.@threads for t in 1:T
+            row    = view(state, t+1, ar_cols)
+            out_ar = view(ϕ_mat, :, t)
+
+            MultiSARMAtoReg_cached!(
+                out_ar,
+                row,
+                cache_ar;
+                ztrans = ztrans,
+                negative_signs = true
+            )
+        end
+
+        expand_grouped_states_fast!(
+            ϕ_expanded,
+            ϕ_mat,
+            nPerGroup,
+            T_all
+        )
+
+        ϕ_sum = vec(sum(ϕ_expanded; dims=1))
+
+
+        # --------------------------------------------------------
+        # Expand MA coefficients
+        # --------------------------------------------------------
+
+        @inbounds Threads.@threads for t in 1:T
+            row    = view(state, t+1, ma_cols)
+            out_ma = view(ψ_mat, :, t)
+
+            MultiSARMAtoReg_cached!(
+                out_ma,
+                row,
+                cache_ma;
+                ztrans = ztrans,
+                negative_signs = false
+            )
+        end
+
+        expand_grouped_states_fast!(
+            ψ_expanded,
+            ψ_mat,
+            nPerGroup,
+            T_all
+        )
+
+        # --------------------------------------------------------
+        # AR presample stage
+        # --------------------------------------------------------
+
+        ma_sums = Vector{Float64}(undef, p_max[1])
+        obs_ar  = Vector{Float64}(undef, p_max[1])
+
+        @inbounds for t in 1:p_max[1]
+
+            ma_sums[t] = dot(
+                @view(Z_ma[t, :]),
+                @view(ψ_expanded[:, t])
+            )
+
+            obs_ar[t] = Y[t] - ma_sums[t]
+        end
+
+        init_y, Z_ar = build_AR_init_opt_orig!(
+            x0_buf,
+            int_exp,
+            m0_buf,
+            group_map_ar,
+            ws_AR_presample,
+            obs_ar,
+            state,
+            ϕ_expanded,
+            activeLags_ar,
+            p1,
+            s1,
+            p_max,
+            σₑ²,
+            σy;
+            INTERCEPT = INTERCEPT,
+            cond_sma  = ma_sums[1],
+            Z         = Z_ar,
+            l         = nPerGroup
+        )
+
+
+        # --------------------------------------------------------
+        # Learn MA regressors, then freeze
+        # --------------------------------------------------------
+
+        # ==========================================================
+        # MA regressor construction
+        # ==========================================================
+
+        obs_ma = copy(Y)
+        @inbounds for t in 1:T_all# t=1
+            obs_ma[t] -= dot(@view(Z_ar[t, :]), @view(ϕ_expanded[:, t]))
+        end
+
+        if ma_regressor_type == :median_freeze
+
+            # ------------------------------------------------------
+            # Median trick: learn Z, then freeze
+            # ------------------------------------------------------
+
+            if i <= freeze_iter
+
+                errors_reg = build_MA_errors_banded(
+                        errors,
+                        obs_ma,
+                        state,
+                        ψ_expanded,
+                        activeLags_ma,
+                        p2,
+                        s2,
+                        p_max,
+                        σₑ²,
+                        σ0,
+                        T_use,
+                        nPerGroup;
+                        ws_sma = ws_sma,
+                        INTERCEPT = INTERCEPT,
+                        ztrans = ztrans,
+                        presample_mode = presample_MA,
+                        use_σ0_for_presample = true
+                    )
+
+                    # Store current reconstructed error path
+                    errors_med[:, i] .= errors_reg
+
+                    # Running pointwise median
+                    med_error = dropdims(
+                        median(
+                            @view(errors_med[:, 1:i]),
+                            dims = 2
+                        );
+                        dims = 2
+                    )
+
+                    # Build Z from median error path
+                    _, Z_ma, _ = SetupARReg_active(
+                        med_error,
+                        activeLags_ma
+                    )
+
+                    #Z .= Z_MA
+
+                    # Freeze design
+                    if i == freeze_iter
+                        Z_fixed = copy(Z_ma)
+                    end
+
+                    # Current reconstructed errors
+                    residuals .= errors_reg[maxlag_ma+1:end]
+
+                else
+
+                    # Fixed Z after adaptation
+                    Z_ma .= Z_fixed
+
+                    compute_conditional_mean!(
+                        cond_mean,
+                        Z_ma,
+                        ψ_expanded,
+                        state,
+                        group_map_T;
+                        INTERCEPT = INTERCEPT
+                    )
+
+                    compute_residuals!(
+                        residuals,
+                        obs_ma,
+                        cond_mean
+                    )
+                end
+
+
+        elseif ma_regressor_type == :current
+
+            # ------------------------------------------------------
+            # Standard approach: use current reconstructed errors
+            # ------------------------------------------------------
+
+            errors_reg = build_MA_errors_banded(
+                errors,
+                obs_ma,
+                state,
+                ψ_expanded,
+                activeLags_ma,
+                p2,
+                s2,
+                p_max,
+                σₑ²,
+                σ0,
+                T_use,
+                nPerGroup;
+                ws_sma = ws_sma,
+                INTERCEPT = INTERCEPT,
+                ztrans = ztrans,
+                presample_mode = presample_MA,
+                use_σ0_for_presample = true
+            )
+
+            # Build Z directly from current error path
+            _, Z_ma, _ = SetupARReg_active(
+                errors_reg,
+                activeLags_ma
+            )
+
+            #Z .= Z_MA
+
+            # Current reconstructed errors
+            residuals .= errors_reg[maxlag_ma+1:end]
+
+        Z = hcat(Z_ar, Z_ma)
+
+        else
+
+            error(
+                "ma_regressor_type must be :median_freeze or :current"
+            )
+
+        end
+
+
+    elseif model_type == :SMA
+
+        # ========================================================
+        # SMA
+        # ========================================================
+
+        # --------------------------------------------------------
+        # Expand MA coefficients
+        # --------------------------------------------------------
+
+        @inbounds Threads.@threads for t in 1:T
+            row = view(state, t+1, startcol:stopcol)
+            out = view(ψ_mat, :, t)
+
+            MultiSARMAtoReg_cached!(
+                out,
+                row,
+                cache_ma;
+                ztrans = ztrans,
+                negative_signs = false
+            )
+        end
+
+        expand_grouped_states_fast!(
+            ψ_expanded,
+            ψ_mat,
+            nPerGroup,
+            T_all
+        )
+
+
+        # ==========================================================
+        # MA regressor construction
+        # ==========================================================
+
+        if ma_regressor_type == :median_freeze #i=1
+
+            # ------------------------------------------------------
+            # Median trick: learn Z, then freeze
+            # ------------------------------------------------------
+
+            if i <= freeze_iter
+
+                errors_reg = build_MA_errors_banded(
+                        errors,
+                        Y,
+                        state,
+                        ψ_expanded,
+                        activeLags_ma,
+                        p2,
+                        s2,
+                        p_max,
+                        σₑ²,
+                        σ0,
+                        T_use,
+                        nPerGroup;
+                        ws_sma = ws_sma,
+                        INTERCEPT = INTERCEPT,
+                        ztrans = ztrans,
+                        presample_mode = presample_MA,
+                        use_σ0_for_presample = true
+                    )
+
+                    # Store current reconstructed error path
+                    errors_med[:, i] .= errors_reg
+
+                    # Running pointwise median
+                    med_error = dropdims(
+                        median(
+                            @view(errors_med[:, 1:i]),
+                            dims = 2
+                        );
+                        dims = 2
+                    )
+
+                    # Build Z from median error path
+                    _, Z_MA, _ = SetupARReg_active(
+                        med_error,
+                        activeLags_ma
+                    )
+
+                    Z .= Z_MA
+
+                    # Freeze design
+                    if i == freeze_iter
+                        Z_fixed = copy(Z_MA)
+                    end
+
+                    # Current reconstructed errors
+                    residuals .= errors_reg[maxlag_ma+1:end]
+
+                else
+
+                    # Fixed Z after adaptation
+                    Z .= Z_fixed
+
+                    compute_conditional_mean!(
+                        cond_mean,
+                        Z,
+                        ψ_expanded,
+                        state,
+                        group_map_T;
+                        INTERCEPT = INTERCEPT
+                    )
+
+                    compute_residuals!(
+                        residuals,
+                        Y,
+                        cond_mean
+                    )
+                end
+
+
+        elseif ma_regressor_type == :current
+
+            # ------------------------------------------------------
+            # Standard approach: use current reconstructed errors
+            # ------------------------------------------------------
+
+            errors_reg = build_MA_errors_banded(
+                errors,
+                Y,
+                state,
+                ψ_expanded,
+                activeLags_ma,
+                p2,
+                s2,
+                p_max,
+                σₑ²,
+                σ0,
+                T_use,
+                nPerGroup;
+                ws_sma = ws_sma,
+                INTERCEPT = INTERCEPT,
+                ztrans = ztrans,
+                presample_mode = presample_MA,
+                use_σ0_for_presample = true
+            )
+
+            # Build Z directly from current error path
+            _, Z_MA, _ = SetupARReg_active(
+                errors_reg,
+                activeLags_ma
+            )
+
+            Z .= Z_MA
+
+            # Current reconstructed errors
+            residuals .= errors_reg[maxlag_ma+1:end]
+
+
+        else
+
+            error(
+                "ma_regressor_type must be :median_freeze or :current"
+            )
+
+        end
+
+
+    elseif model_type == :SAR
+
+        # ========================================================
+        # SAR
+        # ========================================================
+
+        # --------------------------------------------------------
+        # Expand AR coefficients
+        # --------------------------------------------------------
+
+        @views @inbounds for t in 1:T
+            row = state[t+1, startcol:stopcol]
+            out = ϕ_mat[:, t]
+
+            MultiSARMAtoReg_cached!(
+                out,
+                row,
+                cache_ar;
+                ztrans = ztrans,
+                negative_signs = true
+            )
+        end
+
+        expand_grouped_states_fast!(
+            ϕ_expanded,
+            ϕ_mat,
+            nPerGroup,
+            T_all
+        )
+
+        ϕ_sum = vec(sum(ϕ_expanded; dims=1))
+
+
+        # --------------------------------------------------------
+        # AR presample
+        # --------------------------------------------------------
+
+        if !SAR_conditional
+
+            init_y, Z = build_AR_init_opt_orig!(
+                x0_buf,
+                int_exp,
+                m0_buf,
+                group_map,
+                ws_presample,
+                Y,
+                state,
+                ϕ_expanded,
+                activeLags_ar,
+                p1,
+                s1,
+                p_max,
+                σₑ²,
+                σy;
+                INTERCEPT = INTERCEPT,
+                cond_sma = nothing,
+                Z = Z,
+                l = nPerGroup,
+                presample_method = presample_AR
+            )
+        end
+
+
+        # --------------------------------------------------------
+        # Conditional mean and residuals
+        # --------------------------------------------------------
+
+        compute_conditional_mean!(
+            cond_mean,
+            Z,
+            ϕ_expanded,
+            state,
+            group_map_T;
+            INTERCEPT = INTERCEPT
+        )
+
+        compute_residuals!(
+            residuals,
+            Y,
+            cond_mean
+        )
+
+    else
+
+        error("model_type must be :SAR, :SMA, or :SARMA")
+
+    end
+
+
+    # ============================================================
+    # Recompute Cargs
+    # ============================================================
+
+    if model_type == :SAR
+
+        if !SAR_conditional
+            @inbounds copyto!(
+                Cargs[1][1],
+                view(Z, 1, :)
+            )
+        end
+
+    elseif model_type == :SMA || model_type == :SARMA
+
+        build_Cargs_fast_threaded!(
+            Cargs_raw,
+            Z,
+            T_all
+        )
+
+        Cargs = group_vector(
+            Cargs_raw,
+            nPerGroup
+        )
+
+    end
+
+    # ==================================================
+    # Update observation noise / SV
+    # ==================================================
+
+    if obs_var_type == :SV
+
+        if nPerGroup > 1
+
+            h̄, ϕ̄v, μ̄v, σ̄²ₙ = UpdateErrorVolatility_grouped!(
+                residuals,           # ORIGINAL scale residuals (length T_all)
+                h̄, ξ̄, ϕ̄v, μ̄v, σ̄²ₙ,
+                ϕ̄₀, κ̄₀, m̄₀, σ̄₀, ν̄₀, ψ̄₀,
+                mixLogχ²₁, m, v;
+                g = nPerGroup,
+                offsetSV = eps()
+            )
+
+            σₑ_g = exp.(h̄ ./ 2)
+            expand_sigma_grouped!(σₑ, σₑ_g, nPerGroup, T_all)
+
+        else
+
+            h̄, ϕ̄v, μ̄v, σ̄²ₙ =
+                UpdateErrorVolatility(
+                    residuals, h̄, ξ̄, ϕ̄v, μ̄v, σ̄²ₙ,
+                    ϕ̄₀, κ̄₀, log(σ0^2), σ̄₀, ν̄₀, ψ̄₀,
+                    mixLogχ²₁, m, v;
+                    offsetSV = eps()
+                )
+
+            #σₑ = vec(reshape(exp.(h̄ ./ 2), :, 1)[pre_length+1:end, :])
+            σₑ = reshape(exp.(h̄ ./ 2), :, 1)
+        end
+
+
+    elseif obs_var_type == :SVDSP
+
+        hstar, h̄, h̃, Ssv, ξ̄, ϕ̄v, μ̄v =
+            UpdateErrorVolatility_DSP(
+                residuals, h̄, hstar, h̃, ξ̄, ϕ̄v, μ̄v,
+                ϕ̄₀, κ̄₀, m̄₀, σ̄₀, ν̄₀, ψ̄₀,
+                mixLogχ²₁, postDistsv, m, v, Ssv, σ0^2;
+                σ̄²ₙ = 1.0,
+                offsetSV = eps()
+                #offsetSV = 10^-4
+            )
+
+        #if d_order == 1
+            σₑ = vec(reshape(exp.(hstar[2:end] ./ 2), :, 1))
+        #else
+            #σₑ = vec(reshape(exp.(hstar[3:end] ./ 2), :, 1))
+        #end
+
+
+    elseif obs_var_type == :static
+
+        σₑ = compute_noise_SARMA(
+            alpha_sigma_hat,
+            beta_sigma,
+            residuals
+        )
+
+        σₑ = fill(σₑ, T_all, 1)
+
+
+    else
+
+        error("obs_var_type must be :SV, :SVDSP, or :static")
+
+    end
+
+    # ==================================================
+    # Store draws
+    # ==================================================
+
+    # ==================================================
+    # Store MA errors during adaptation
+    # ==================================================
+    if model_type in (:SMA, :SARMA) && i <= freeze_iter
+        errors_mx[:, :, i] .= errors_reg
+    end
+
+    if i > nBurn && ((i - nBurn) % thin_factor == 0)
+
+        thin_idx += 1
+        #idx = i - nBurn
+
+        θpost[:, :, thin_idx] .= state[2:end, :]
+        Hpost[:, :, thin_idx] .= H
+
+        # --------------------------------------------------
+        # Observation variance draws
+        # --------------------------------------------------
+
+        if obs_var_type in (:SV, :SVDSP)
+
+            if nPerGroup > 1
+                σₑpost[:, thin_idx] .= σₑ
+            else
+                σₑpost[:, thin_idx] .= σₑ
+            end
+
+        else
+            σₑpost[thin_idx] = σₑ[1]
+        end
+
+        ϕpost[:, thin_idx] .= ϕ
+        μpost[:, thin_idx] .= μ
+
+        #scale_post[:, thin_idx] .= σ²ₙ
+        #cond_mean_post[:, thin_idx] .= cond_mean
+
+        # --------------------------------------------------
+        # Static state variance
+        # --------------------------------------------------
+
+        if state_var_type == :static
+            static_state_var[:, thin_idx] .= static_var
+        end
+
+
+        # --------------------------------------------------
+        # Observation-volatility parameters
+        # --------------------------------------------------
+
+        if obs_var_type == :SV
+
+            μ̃post[:, thin_idx]   .= μ̄v
+            ϕ̃post[:, thin_idx]   .= ϕ̄v
+            σ̄²ₙpost[:, thin_idx]  .= σ̄²ₙ
+ 
+        elseif obs_var_type == :SVDSP 
+
+            h̃post[:, thin_idx] .= h̄
+            μ̃post[:, thin_idx] .= μ̄v
+            ϕ̃post[:, thin_idx] .= ϕ̄v
+
+            #σ̄²ₙpost[:,idx] .= 1 ./ ξ̄
+        end
+
+
+        # --------------------------------------------------
+        # Model-specific storage
+        # --------------------------------------------------
+
+        if model_type == :SARMA
+
+            #errors_mx[:, :, thin_idx] .= residuals
+            y_mx[:, :, thin_idx] .= init_y
+
+        elseif model_type == :SAR
+
+            if !SAR_conditional
+                y_mx[:, :, thin_idx] .= init_y
+            end
+
+            #intercept_true[thin_idx,:] = x_mean .* (1 .- ϕ_sum) + state[2:end, 1]
+
+            #intercept_true[thin_idx,:] =
+            #    x_mean .* (1 .- ϕ_sum) + sd .* state[2:end, 1]
+
+            #elseif model_type == :SMA
+            #    errors_mx[:, :, thin_idx] .= errors_reg
+
+        end
+    end
+
+    end # end Gibbs
+
+    # ==================================================
+    # Return draws
+    # ==================================================
+
+    if model_type == :SARMA
+
+        return θpost, Hpost, σₑpost, errors_mx, y_mx
+
+
+    elseif model_type == :SMA
+
+        return θpost, Hpost, σₑpost, ϕpost, μpost, errors_mx
+
+
+    elseif model_type == :SAR
+
+        if !SAR_conditional
+
+            if obs_var_type in (:SV, :SVDSP)
+
+                return θpost, Hpost, σₑpost,
+                        ϕpost, μpost,
+                        μ̃post, ϕ̃post, h̃post, σ̄²ₙpost,
+                        y_mx, static_state_var
+                        #intercept_true
+
+            else
+
+                return θpost, Hpost, σₑpost,ϕpost, μpost,y_mx, static_state_var, cond_mean_post, 
+                #intercept_true, 
+                #Svec[:,:,T]
+            end
+
+        else
+
+            if obs_var_type in (:SV, :SVDSP)
+
+                return θpost, Hpost, σₑpost,
+                    ϕpost, μpost,
+                    μ̃post, ϕ̃post, h̃post, σ̄²ₙpost,
+                    static_state_var, intercept_true
+
+            else
+
+                return θpost, Hpost, σₑpost,
+                    ϕpost, μpost
+            end
+
+        end
+
+    else
+
+        error(
+            "No valid model type selected: model_type=$model_type. " *
+            "Use :SAR, :SMA, or :SARMA."
+        )
+
+    end
+
+    end
+
 function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSettings)
 
     # ==================================================

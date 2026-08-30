@@ -213,7 +213,6 @@ forecastHorizons = collect(1:168)
 # Keep sorted because the forecasting function stores LPS
 # in increasing horizon order.
 forecastHorizons = sort(unique(forecastHorizons))
-
 maxHorizon = maximum(forecastHorizons)
 
 
@@ -221,7 +220,7 @@ maxHorizon = maximum(forecastHorizons)
 # Number of forecast origins
 # ----------------------------------------------------------
 
-nOrigins = 10
+nOrigins = 30
 
 
 # ----------------------------------------------------------
@@ -231,9 +230,27 @@ nOrigins = 10
 # 2005-12-14 03:00
 # ----------------------------------------------------------
 
-TRAIN_START  = DateTime(2001, 1, 9, 2)
-FIRST_ORIGIN = DateTime(2005, 12, 14, 4)
+#TRAIN_START  = DateTime(2001, 1, 9, 2)
+#FIRST_ORIGIN = DateTime(2005, 12, 14, 4)
 
+# ----------------------------------------------------------
+# First forecast origin
+#
+# The first forecast week begins at the onset of the main
+# COVID-19 shutdown period in Australia.
+#
+# Training sample ends:
+# 2020-03-23 03:00
+#
+# First forecast:
+# 2020-03-23 04:00
+#
+# The training span is kept identical to the previous setup:
+# 1800 days + 2 hours.
+# ----------------------------------------------------------
+
+TRAIN_START  = DateTime(2015, 4, 19, 2)
+FIRST_ORIGIN = DateTime(2020, 3, 23, 4)
 
 # ----------------------------------------------------------
 # Distance between origins, in hourly observations
@@ -251,6 +268,7 @@ FIRST_ORIGIN = DateTime(2005, 12, 14, 4)
 origin_spacing = 24 * 30       # 720 hours
 
 @assert origin_spacing >= maxHorizon
+
 
 
 ############################################################
@@ -302,10 +320,7 @@ p_threshold      = 0.99
 ############################################################
 
 iterated = false
-
-num_iters =
-    iterated ? 5 : 1
-
+num_iters =iterated ? 5 : 1
 kf_method = :iekf
 
 
@@ -519,15 +534,8 @@ function preprocess_data(
 
     end
 
-
-    x_train =
-        train_trans .-
-        center_value
-
-    y_test =
-        test_trans .-
-        center_value
-
+    x_train =train_trans .-center_value
+    y_test = test_trans .-center_value
 
     return x_train,
            y_test,
@@ -547,9 +555,7 @@ function inverse_transform(
     scale_factor::Float64
 )
 
-    z =
-        (x .+ center_value) .*
-        scale_factor
+    z =(x .+ center_value) .*scale_factor
 
     if log_transform
         return exp.(z)
@@ -597,14 +603,8 @@ function fit_one_SAR(
 
     p1 = copy(model.p)
     p2 = copy(model.p)
-
     pFit = sum(p1)
-
-
-    p_max = [
-        sum(p1 .* s1),
-        sum(p2 .* s2)
-    ]
+    p_max = [sum(p1 .* s1),sum(p2 .* s2)]
 
 
     nLags =
@@ -650,45 +650,16 @@ function fit_one_SAR(
     ########################################################
 
     if SAR_conditional
-
-        obs = vcat(
-            x[1:25],
-            x[26:end]
-        )
-
+        obs = vcat(x[1:25],x[26:end])
     else
-
-        init_y =
-            fill(
-                mean(x[1:50]),
-                p_max[1]
-            )
-
-        obs =
-            vcat(
-                init_y,
-                x
-            )
-
+        init_y =fill(mean(x[1:50]),p_max[1])
+        obs =vcat(init_y,x)
     end
 
 
-    activeLags_ar =
-        FindActiveLagsMultiSAR(
-            p1,
-            s1
-        )
-
-    activeLags_ma =
-        activeLags_ar
-
-
-    Y, Z, T =
-        SetupARReg_active(
-            obs,
-            activeLags_ar
-        )
-
+    activeLags_ar =FindActiveLagsMultiSAR(p1,s1)
+    activeLags_ma =activeLags_ar
+    Y, Z, T =SetupARReg_active(obs,activeLags_ar)
 
     ########################################################
     # Static variance prior
@@ -696,35 +667,15 @@ function fit_one_SAR(
 
     alpha_sigma = 0.001
     beta_sigma  = 0.001
-
-    alpha_sigma_hat =
-        alpha_sigma +
-        T / 2
+    alpha_sigma_hat =alpha_sigma +T / 2
 
     ########################################################
     # Grouping
     ########################################################
 
-    y_g =
-        group_vector(
-            Y,
-            nPerGroup
-        )
-
-
-    Cargs =
-        [
-            Z[t, :]
-            for t in 1:T
-        ]
-
-
-    Cargs_g =
-        group_vector_view(
-            Cargs,
-            nPerGroup
-        )
-
+    y_g =group_vector(Y,nPerGroup)
+    Cargs =[Z[t, :]for t in 1:T]
+    Cargs_g =group_vector_view(Cargs, nPerGroup)
 
     cache_ar =
         build_sarma_cache(
@@ -746,40 +697,19 @@ function fit_one_SAR(
     # Initial state prior
     ########################################################
 
-    var_mat =
-        fill(
-            0.3^2,
-            nLags
-        )
-
+    var_mat =fill(0.3^2,nLags)
 
     if INTERCEPT
 
-        var_mat[1] =
-            1.0^2
-
+        var_mat[1] =1.0^2
         if intercept_dynamics == :ll
-
-            var_mat[2] =
-                0.005^2
-
+            var_mat[2] =0.005^2
         end
     end
 
 
-    Σ₀ =
-        PDMat(
-            Diagonal(
-                var_mat
-            )
-        )
-
-
-    μ₀ =
-        zeros(
-            nLags
-        )
-
+    Σ₀ =PDMat(Diagonal(var_mat))
+    μ₀ =zeros(nLags)
 
     ########################################################
     # Prior settings
@@ -791,9 +721,7 @@ function fit_one_SAR(
         ϕ₀ = 0.5,
         κ₀ = 0.3,
 
-        m₀ =
-            -15.0 +
-            log(nPerGroup),
+        m₀ =-15.0 +log(nPerGroup),
 
         σ₀ = 3.0,
 
@@ -804,20 +732,13 @@ function fit_one_SAR(
         Σ₀ = Σ₀,
 
         # Observation noise
-        σₑ =
-            fill(
-                σ0_obs,
-                T
-            ),
+        σₑ =fill(σ0_obs,T),
 
-        alpha_sigma =
-            alpha_sigma,
+        alpha_sigma =alpha_sigma,
 
-        beta_sigma =
-            beta_sigma,
+        beta_sigma =beta_sigma,
 
-        alpha_sigma_hat =
-            alpha_sigma_hat,
+        alpha_sigma_hat =alpha_sigma_hat,
 
         # UKF / IEKF
         α_ukf = 1e-3,
@@ -832,49 +753,22 @@ function fit_one_SAR(
 
     algoSettings = (
 
-        nBurn =
-            nBurn,
+        nBurn =nBurn,
 
         # Total sampler iterations
-        nIter =
-            nIter +
-            nBurn,
-
-        INTERCEPT =
-            INTERCEPT,
-
-        resid_label =
-            iterated,
-
-        method_label =
-            kf_method,
-
-        model_type =
-            model_type,
-
-        SAR_conditional =
-            SAR_conditional,
-
-        obs_var_type =
-            obs_var_type,
-
-        state_var_type =
-            state_var_type,
-
-        ma_regressor_type =
-            :median_freeze,
-
-        clipped_partials =
-            clipped_partials,
-
-        p_threshold =
-            p_threshold,
-
-        presample_AR =
-            :recursive,
-
-        presample_MA =
-            :simple
+        nIter =nIter +nBurn,
+        INTERCEPT =INTERCEPT,
+        resid_label =iterated,
+        method_label =kf_method,
+        model_type =model_type,
+        SAR_conditional =SAR_conditional,
+        obs_var_type =obs_var_type,
+        state_var_type =state_var_type,
+        ma_regressor_type =:median_freeze,
+        clipped_partials =clipped_partials,
+        p_threshold =p_threshold,
+        presample_AR =:recursive,
+        presample_MA =:simple
     )
 
 
@@ -884,56 +778,25 @@ function fit_one_SAR(
 
     modelSettings = (
 
-        nPerGroup =
-            nPerGroup,
-
+        nPerGroup =nPerGroup,
         s1 = s1,
         p1 = p1,
-
         s2 = s2,
         p2 = p2,
-
-        p_max =
-            p_max,
-
-        nLags =
-            nLags,
-
-        iterations =
-            num_iters,
-
-        Cargs =
-            Cargs_g,
-
-        Z =
-            Z,
-
-        activeLags_ma =
-            activeLags_ma,
-
-        activeLags_ar =
-            activeLags_ar,
-
-        cache_ma =
-            cache_ma,
-
-        cache_ar =
-            cache_ar,
-
-        ztrans =
-            ztrans,
-
-        updateσₙ =
-            false,
-
-        nMixComp =
-            10,
-
-        α =
-            0.5,
-
-        β =
-            0.5,
+        p_max =p_max,
+        nLags =nLags,
+        iterations =num_iters,
+        Cargs =Cargs_g,
+        Z =Z,
+        activeLags_ma =activeLags_ma,
+        activeLags_ar =activeLags_ar,
+        cache_ma =cache_ma,
+        cache_ar =cache_ar,
+        ztrans =ztrans,
+        updateσₙ =false,
+        nMixComp =10,
+        α =0.5,
+        β = 0.5,
 
         # SV settings
         ϕ̄₀ = 0.5,
@@ -949,11 +812,8 @@ function fit_one_SAR(
         μ̄ = -15.0,
         σ̄²ₙ = 1.0,
 
-        intercept_dynamics =
-            intercept_dynamics,
-
-        T_use =
-            2 * p_max[2]
+        intercept_dynamics =intercept_dynamics,
+        T_use =2 * p_max[2]
     )
 
 
@@ -1019,8 +879,7 @@ function forecast_one_SAR(
     seed
 )
 
-    SAR_res =
-        fit.SAR_res
+    SAR_res =fit.SAR_res
 
 
     ########################################################
@@ -1042,12 +901,7 @@ function forecast_one_SAR(
     # State at forecast origin
     ########################################################
 
-    θₜpost =
-        SAR_res[1][
-            end,
-            :,
-            keep
-        ]
+    θₜpost =SAR_res[1][end,:, keep]
 
 
     ########################################################

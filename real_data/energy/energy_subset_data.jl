@@ -10,19 +10,20 @@ df = CSV.read(
 # ============================================================
 # Training data
 # ============================================================
-df_train = select_period(
-    df,
+#df_train = select_period(
+    #df,
     #DateTime(2001, 1, 9, 2),
     #DateTime(2005, 12, 14, 3)
-
-)
+#)
 
 g = 24 * 30
 
 df_train_full = select_period(
     df,
-    DateTime(2001, 1, 9, 2),
-    DateTime(2010, 12, 14, 3)
+    #DateTime(2004, 1, 9, 2),
+    #DateTime(2010, 12, 14, 3)
+    DateTime(2015, 4, 19, 4),
+    DateTime(2020, 3, 23, 4)
 )
 
 # Largest number of observations divisible by g
@@ -37,6 +38,7 @@ df_train = df_train_full[1:n_use, :]
 @show df_train.datetime[end]
 
 @assert nrow(df_train) % g == 0
+#nrow(df_train) /(24*30)
 
 #timestamp_train[1,:]
 data_train      = df_train.demand_VIC
@@ -58,6 +60,7 @@ timestamp_train = df_train.datetime
 
 test_start = df_train.datetime[end] + Hour(1)
 test_end   = test_start + Day(7) - Hour(1)
+
 
 df_test = select_period(
     df,
@@ -85,7 +88,7 @@ xlog = log.(data_train)
 train_mean = mean(xlog)
 x_detrend = (xlog .- train_mean)
 #length(x_detrend)/(24*30)
-#43200/(24*30)
+#86400/(24*365)
 #24*30*60=43200
 #length(x_detrend)-43200
 
@@ -93,7 +96,7 @@ y_test = log.(y_test_raw) .- train_mean
 #.- train_mean
 
 # ------------------------------------------------------------
-# Select period
+# OLD: Select period
 # ------------------------------------------------------------
 
 df_covid = select_period(
