@@ -1405,3 +1405,5 @@ function PredLocalMultiSARMA_gr(
 
     return yPreds, LPS, MAE
 end
+
+#using PolyaGammaSamplers
