@@ -243,7 +243,7 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
     static_state_var = zeros(nLags,  nThin)
 
     # ==================================================
-    # Remaining code: UNCHANGED
+    # Remaining code
     # ==================================================
 
     total_params = size(Z, 2)
@@ -1567,7 +1567,7 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
 
     if model_type == :SARMA
 
-        return θpost, Hpost, σₑpost, errors_mx, y_mx
+        return θpost, Hpost, σₑpost, ϕpost, μpost, errors_mx, y_mx
 
 
     elseif model_type == :SMA

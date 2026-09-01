@@ -133,7 +133,8 @@ include("TVSARUtils.jl")
 include("ForecastFunction.jl")
 export true_f,
        PredLocalMultiSAR_SV_gr,
-       PredLocalMultiSMA_gr
+       PredLocalMultiSMA_gr,
+       PredLocalMultiSARMA_gr
 
 include("PlottingFunctions.jl")
 export summarize_and_plot_t,
