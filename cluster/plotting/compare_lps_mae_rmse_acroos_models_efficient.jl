@@ -29,7 +29,7 @@ model_specs = [
   
     (
         file  = "double_large_TVSAR_plot_results.jld2",
-        label = "Triple-seasonal TV-SAR",
+        label = "Double-seasonal (large) TV-SAR",
         color = "#3A7D44"
     )
 ]

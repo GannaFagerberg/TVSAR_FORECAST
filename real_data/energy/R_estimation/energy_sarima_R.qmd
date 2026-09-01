@@ -1,0 +1,811 @@
+---
+title: "MS"
+author: "SSN"
+format: html
+---
+
+```{r}
+# ── Delete all cached files ───────────────────────────────────────────────────
+# 
+# # Delete cache_traffic/ folder contents
+# cache_files <- list.files("cache_traffic", 
+#                           full.names = TRUE)
+# file.remove(cache_files)
+# cat("Deleted", length(cache_files), "cache files\n")
+# 
+# Delete saved forecast matrices
+forecast_files <- c(
+  "fc_msarima_full.RData",
+  "fc_sarima_full.RData",
+  "fc_mstl_full.RData",
+  "fc_prophet_full.RData"
+)
+# 
+for (f in forecast_files) {
+  cat(sprintf("%-35s %s\n", f, 
+              ifelse(file.exists(f), "EXISTS ", "missing ")))
+}
+
+# for (f in forecast_files) {
+#   if (file.exists(f)) {
+#     file.remove(f)
+#     cat("Deleted:", f, "\n")
+#   }
+# }
+# 
+# # Verify everything is gone
+# cat("\nRemaining cache files:",
+#     length(list.files("cache_traffic")), "\n")
+# cat("Remaining forecast files:",
+#     sum(sapply(forecast_files, file.exists)), "\n")
+```
+
+```{r}
+# old_files <- c("fc_sarima_full.RData", "fc_mstl_full.RData")
+# 
+# for (f in old_files) {
+#   if (file.exists(f)) {
+#     file.remove(f)
+#     cat("Deleted:", f, "\n")
+#   } else {
+#     cat("Not found (nothing to delete):", f, "\n")
+#   }
+# }
+```
+
+```{r}
+# if (file.exists("fc_sarima_full.RData")) file.rename("fc_sarima_full.RData", "fc_sarima_full_meanonly_backup.RData")
+# if (file.exists("fc_mstl_full.RData"))   file.rename("fc_mstl_full.RData",   "fc_mstl_full_meanonly_backup.RData")
+
+
+install.packages("remotes")
+
+remotes::install_version("forecast", version = "9.0.2")
+remotes::install_version("smooth", version = "4.4.0")
+```
+
+Data Loading, Preparation & Exploration
+
+```{r}
+# install.packages("forecast")
+# install.packages("smooth")
+# install.packages("fpp3")
+# install.packages("prophet")
+#install.packages("future")
+
+remove.packages("smooth")
+remove.packages("forecast")
+
+"smooth" %in% rownames(installed.packages())
+"forecast" %in% rownames(installed.packages())
+
+install.packages("remotes")
+remotes::install_version("smooth", version = "4.4.0", upgrade = "never")
+
+packageVersion("smooth") #‘4.3.1’
+packageVersion("forecast") #8.23.9
+
+library(fpp3)
+library(smooth) # fro msarima(), sarima() and adam()
+ 
+library(forecast) # for tbats(),  mstl()
+library(tsibble)
+library(dplyr)
+library(prophet)  # prophet()
+library(fable)
+library(fabletools)
+library(dplyr)
+
+
+suppressWarnings(library(fpp3))
+suppressWarnings(library(smooth))
+```
+
+# skip refitting a model if we already have a saved result on disk.
+
+```{r}
+cache_dir <- "cache_traffic"
+if (!dir.exists(cache_dir)) dir.create(cache_dir)
+
+# run_cached(path, fun): if `path` already exists, load and return it;
+# otherwise run fun(), save the result to `path`, and return it.
+run_cached <- function(path, fun) {
+  if (file.exists(path)) {
+    message("[cache hit]  loading ", path)
+    readRDS(path)
+  } else {
+    message("[cache miss] computing ", path)
+    result <- fun()
+    saveRDS(result, path)
+    result
+  }
+}
+
+```
+
+# Traffic flow data
+
+```{r}
+
+energy_raw =  read.csv("victoria_training_data.csv", sep = ",", header = T)
+names(energy_raw)
+
+# rows
+head(energy_raw)
+str(energy_raw)
+
+## add timestamp
+# Check column names
+names(energy_raw)
+
+# Convert first column to POSIXct timestamp
+timestamp_train <- as.POSIXct(
+  energy_raw[[1]],
+  format = "%Y-%m-%dT%H:%M:%OS",
+  tz = "UTC"
+)
+
+head(timestamp_train)
+
+energy_raw$timestamp_train <- as.POSIXct(
+  energy_raw[[1]],
+  format = "%Y-%m-%dT%H:%M:%OS",
+  tz = "UTC"
+)
+
+head(energy_raw)
+
+energy_train = log(energy_raw$demand_VIC)
+plot(energy_train, type="l")
+train_mean = mean(energy_train)
+x_detrend = energy_train - train_mean
+
+plot(x_detrend)
+```
+
+```{r}
+cat("Total observations:", length(x_detrend), "\n")
+
+```
+
+# Actual matrix
+
+```{r}
+h       <- 144
+n_train <- nrow(traffic_train)
+n_test  <- nrow(traffic_test)
+y_full  <- traffic_10min$Traffic_flow
+
+actual_matrix_full <- matrix(NA, nrow = n_test, ncol = h)
+for (i in 1:n_test) {
+  test_start1 <- n_train + i
+  test_end1   <- test_start1 + h - 1
+  if (test_end1 <= length(y_full)) {
+    actual_matrix_full[i, ] <- y_full[test_start1:test_end1]
+  }
+}
+
+cat("h =", h, " n_train =", n_train, " n_test =", n_test, "\n")
+cat("h =", h, "\n")
+cat("n_train =", n_train, "\n")
+cat("n_test =", n_test, "\n")
+cat("actual_matrix_full dimensions:", dim(actual_matrix_full), "\n")
+
+#is.na(actual_matrix_full)
+
+
+```
+
+# Msarima - using auto.msarima() from smooth package
+
+```{r}
+
+time_auto <- system.time({
+
+  fit_auto <- auto.msarima(
+    x_detrend,
+    lags = c(1, 24, 168),
+
+    orders = list(
+      ar = c(2, 2, 2),
+      i  = c(1, 0, 0),
+      ma = c(2, 2, 2)
+    ),
+
+    initial = "backcasting",
+    bounds  = "admissible",
+    loss    = "likelihood",
+    ic      = "BIC",
+    silent  = TRUE
+  )
+
+})
+
+### OBS! I get the same fit as in the paper with the paper
+orders(fit_auto)
+lags(fit_auto)
+modelName(fit_auto)
+BIC(fit_auto)
+
+#summary(fit_auto)
+coef(fit_auto)
+cat("auto.msarima() selected:", fit_auto$model, "\n")# SARIMA(0,1,2)[1](1,0,2)[24](2,0,2)[168] 
+
+time_auto["elapsed"]/60 # actual time elapsed in seconds
+#4.76 mins
+```
+
+
+# Msarima - using auto.msarima() from smooth package
+
+```{r}
+
+time_auto <- system.time({
+
+  fit_auto <- auto.msarima(
+    x_detrend,
+    lags = c(1, 24, 168),
+
+    orders = list(
+      ar = c(2, 2, 2),
+      i  = c(1, 0, 0),
+      ma = c(2, 2, 2)
+    ),
+
+    initial = "backcasting",
+    bounds  = "admissible",
+    loss    = "likelihood",
+    ic      = "BIC",
+    silent  = TRUE
+  )
+
+})
+
+### OBS! I get the same fit as in the paper with the paper
+orders(fit_auto)
+lags(fit_auto)
+modelName(fit_auto)
+BIC(fit_auto)
+
+#summary(fit_auto)
+coef(fit_auto)
+cat("auto.msarima() selected:", fit_auto$model, "\n")# SARIMA(0,1,2)[1](1,0,2)[24](2,0,2)[168] 
+
+time_auto["elapsed"]/60 # actual time elapsed in seconds
+#4.76 mins
+```
+
+
+
+# MSTL
+```{r}
+# ------------------------------------------------------------
+# Create multiple-seasonal time series
+# Daily seasonality: 24
+# Weekly seasonality: 168
+# ------------------------------------------------------------
+
+y_train_msts <- msts(
+  x_detrend,
+  seasonal.periods = c(24, 168)
+)
+
+
+# ------------------------------------------------------------
+# Fit MSTL
+# ------------------------------------------------------------
+
+time_mstl <- system.time({
+
+  fit_mstl <- mstl(
+    y_train_msts,
+    s.window = "periodic"
+  )
+
+})
+
+cat("Fitting time:", time_mstl["elapsed"], "seconds\n")
+
+
+# ------------------------------------------------------------
+# Plot decomposition
+# ------------------------------------------------------------
+
+plot(fit_mstl)
+#length(y_train_msts)
+```
+
+### Prophet
+
+```{r}
+# Additive model: Y_t = T_t + S_t + H_t + ε_t
+# Trend + Fourier seasonality + holidays + noise
+# Requires specific dataframe format: ds (datetime) + y (value)
+
+library(prophet)
+
+library(prophet)
+
+# ------------------------------------------------------------
+# Prophet data
+# ------------------------------------------------------------
+
+prophet_train <- data.frame(
+  ds = energy_raw$timestamp,
+  y  = as.numeric(x_detrend)
+)
+
+
+# ------------------------------------------------------------
+# Define Prophet model WITHOUT fitting
+# ------------------------------------------------------------
+
+fit_prophet <- prophet(
+  daily.seasonality  = FALSE,
+  weekly.seasonality = FALSE,
+  yearly.seasonality = FALSE,
+  seasonality.mode   = "additive"
+)
+
+
+# ------------------------------------------------------------
+# Add seasonalities
+#
+# Prophet periods are expressed in DAYS:
+#   24 hours  = 1 day
+#   168 hours = 7 days
+# ------------------------------------------------------------
+
+fit_prophet <- add_seasonality(
+  fit_prophet,
+  name = "daily",
+  period = 1,
+  fourier.order = 10
+)
+
+fit_prophet <- add_seasonality(
+  fit_prophet,
+  name = "weekly",
+  period = 7,
+  fourier.order = 3
+)
+
+
+# ------------------------------------------------------------
+# Fit model
+# ------------------------------------------------------------
+
+time_prophet <- system.time({
+
+  fit_prophet <- fit.prophet(
+    fit_prophet,
+    prophet_train
+  )
+
+})
+
+cat("Fitting time:", time_prophet["elapsed"], "seconds\n")
+
+
+# ------------------------------------------------------------
+# In-sample fitted values
+# ------------------------------------------------------------
+
+prophet_fitted <- predict(
+  fit_prophet,
+  prophet_train
+)
+
+fitted_prophet <- prophet_fitted$yhat
+
+
+# ------------------------------------------------------------
+# MAE and RMSE
+# ------------------------------------------------------------
+
+mae_prophet <- mean(
+  abs(x_detrend - fitted_prophet),
+  na.rm = TRUE
+)
+
+rmse_prophet <- sqrt(
+  mean((x_detrend - fitted_prophet)^2, na.rm = TRUE)
+)
+
+cat("MAE: ", mae_prophet, "\n")
+cat("RMSE:", rmse_prophet, "\n")
+
+
+# ------------------------------------------------------------
+# Residual ACF
+# ------------------------------------------------------------
+
+resid_prophet <- as.numeric(x_detrend) - fitted_prophet
+
+acf(
+  resid_prophet,
+  lag.max = 24 * 14,
+  main = "Prophet Residual ACF"
+)
+
+# Daily seasonal lags
+abline(
+  v = seq(24, 24 * 14, by = 24),
+  col = "indianred",
+  lty = 2
+)
+
+# Weekly seasonal lags
+abline(
+  v = seq(168, 24 * 14, by = 168),
+  col = "darkblue",
+  lty = 2
+)
+
+
+# ------------------------------------------------------------
+# Decomposition
+# ------------------------------------------------------------
+
+prophet_plot_components(
+  fit_prophet,
+  prophet_fitted
+)
+### 20.94 seconds - fast
+```
+
+
+# TBATS
+```{r}
+library(forecast)
+
+# ------------------------------------------------------------
+# Create multiple-seasonal hourly time series
+# Daily seasonality:  24
+# Weekly seasonality: 168
+# ------------------------------------------------------------
+
+y_train_msts <- msts(
+  x_detrend,
+  seasonal.periods = c(24, 168)
+)
+
+
+# ------------------------------------------------------------
+# Fit TBATS
+# ------------------------------------------------------------
+
+time_tbats <- system.time({
+
+  fit_tbats <- tbats(
+    y_train_msts,
+    use.box.cox      = NULL,
+    use.trend        = NULL,
+    use.damped.trend = NULL,
+    seasonal.periods = c(24, 168)
+  )
+
+})
+
+cat("Fitting time:", time_tbats["elapsed"]/60, "mins\n") #8.851667 mins
+
+print(fit_tbats)
+
+
+# ------------------------------------------------------------
+# Residual ACF
+# ------------------------------------------------------------
+
+resid_tbats <- as.numeric(residuals(fit_tbats))
+
+acf(
+  resid_tbats,
+  lag.max = 24 * 14,
+  main = "TBATS Residual ACF"
+)
+
+# Daily seasonal lags
+abline(
+  v = seq(24, 24 * 14, by = 24),
+  col = "indianred",
+  lty = 2
+)
+
+# Weekly seasonal lags
+abline(
+  v = seq(168, 24 * 14, by = 168),
+  col = "darkblue",
+  lty = 2
+)
+
+
+# ------------------------------------------------------------
+# In-sample fitted values
+# ------------------------------------------------------------
+
+fitted_tbats <- as.numeric(fitted(fit_tbats))
+
+
+# ------------------------------------------------------------
+# In-sample MAE and RMSE
+# ------------------------------------------------------------
+
+mae_tbats <- mean(
+  abs(as.numeric(x_detrend) - fitted_tbats),
+  na.rm = TRUE
+)
+
+rmse_tbats <- sqrt(
+  mean((as.numeric(x_detrend) - fitted_tbats)^2, na.rm = TRUE)
+)
+
+cat("TBATS MAE: ", mae_tbats, "\n")
+cat("TBATS RMSE:", rmse_tbats, "\n")
+```
+
+# EXPAND WINDOW METHOD
+
+## 3024 refits, one per 10-min observation
+
+```{r}
+# ── Coverage & interval width ────────────────────────
+# actual, lower, upper are all (n_test x h) matrices, same shape as
+# Coverage = proportion of actual values falling inside [lower bound, upper bound]
+# Width    = average interval size (upper bound - lower bound)
+
+coverage_width <- function(actual, lower, upper) {
+  covered <- (actual >= lower) & (actual <= upper)
+  list(
+    coverage_overall = mean(covered, na.rm = TRUE),
+    width_overall    = mean(upper - lower, na.rm = TRUE),
+    coverage_by_h    = colMeans(covered, na.rm = TRUE),   # for the h vs coverage plot
+    width_by_h       = colMeans(upper - lower, na.rm = TRUE)
+  )
+}
+```
+
+## mSARIMA
+
+```{r}
+
+## restart cleanely
+library(future)
+
+plan(sequential)
+
+plan(multisession, workers = 4)
+
+## Test
+library(future.apply)
+
+#file.create(file.path(tempdir(), "test.txt"))
+# Parallelized: each of the 2736 origins is independent, so future_lapply()
+# runs them concurrently across cores instead of one at a time. Same model,
+# NOTE: smooth's forecast() level is a PROPORTION (0.95), not a percentage
+# msarima's optimizer is deterministic (no random init), so no seed is needed for reproducibilty
+
+library(future.apply)
+library(future)
+
+msarima_full_path <- "fc_msarima_full3.RData"
+
+forecast_origins = 100
+
+if (file.exists(msarima_full_path)) {
+
+  message("[cache hit] loading ", msarima_full_path, " — skipping mSARIMA expanding window loop")
+  load(msarima_full_path)
+
+} else {
+
+  n_workers <- max(1, parallel::detectCores() - 1)
+  cat("Running mSARIMA FULL expanding window (2736 refits) across",
+      n_workers, "workers...\n")
+
+  plan(multisession, workers = n_workers)
+
+  time_msarima_full <- system.time({
+    results_msarima <- future_lapply(1:forecast_origins, function(i) {
+
+      train_end_i <- n_train + i - 1
+      y_train_i   <- y_full[1:train_end_i]
+
+      tryCatch({
+        fit_i <- smooth::msarima(
+          y_train_i,
+          lags   = c(1, 144, 1008),
+          orders = list(
+            ar = c(1, 2, 2),
+            i  = c(1, 0, 0),
+            ma = c(1, 2, 2)
+          ),
+          silent = TRUE
+        )
+
+        fc_i <- forecast::forecast(fit_i, h = h, interval = "parametric", level = 0.95)
+
+        # $lower/$upper may come back as a 1-col matrix or a plain vector
+        # depending on smooth's version — as.matrix()[,1] handles either.
+        list(
+          mean  = as.numeric(fc_i$mean),
+          lower = as.numeric(as.matrix(fc_i$lower)[, 1]),
+          upper = as.numeric(as.matrix(fc_i$upper)[, 1]),
+          ok = TRUE, error = NA_character_
+        )
+      }, error = function(e) {
+        list(mean = rep(NA_real_, h), lower = rep(NA_real_, h), upper = rep(NA_real_, h),
+             ok = FALSE, error = conditionMessage(e))
+      })
+
+    }, future.seed = TRUE)
+  })
+
+  plan(sequential)
+
+  fc_msarima_full       <- do.call(rbind, lapply(results_msarima, `[[`, "mean"))
+  fc_msarima_full_lower <- do.call(rbind, lapply(results_msarima, `[[`, "lower"))
+  fc_msarima_full_upper <- do.call(rbind, lapply(results_msarima, `[[`, "upper"))
+
+  n_failed <- sum(!sapply(results_msarima, `[[`, "ok"))
+  if (n_failed > 0) {
+    cat(n_failed, "origin(s) failed to fit — filled with NA.\n")
+    failed_idx <- which(!sapply(results_msarima, `[[`, "ok"))
+    cat("Failed origins:", paste(head(failed_idx, 10), collapse = ", "),
+        if (length(failed_idx) > 10) "..." else "", "\n")
+  } else {
+    cat("All 200 origins fit successfully.\n")
+  }
+
+  cat("mSARIMA full loop time:",
+      round(time_msarima_full["elapsed"]/60, 2), "minutes\n")
+
+  save(fc_msarima_full, fc_msarima_full_lower, fc_msarima_full_upper,
+       file = msarima_full_path)
+  cat("mSARIMA full forecasts + 95% PI saved.\n")
+}
+
+#load("fc_msarima_full.RData")
+
+#actual_matrix_full1 = actual_matrix_full[1:1000,]
+#fc_msarima_full1 = fc_msarima_full[1:2736,]
+#library("forecast")
+#package_version(forecast)
+```
+
+```{r}
+# mSARIMA MAE / RMSE
+mae_msarima_full <- sapply(1:h, function(hh) {
+  mean(abs(fc_msarima_full[, hh] - actual_matrix_full[1:forecast_origins, hh]), na.rm = TRUE)
+})
+
+rmse_msarima_full <- sapply(1:h, function(hh) {
+  sqrt(mean((fc_msarima_full[, hh] - actual_matrix_full[1:forecast_origins, hh])^2, na.rm = TRUE))
+})
+
+
+
+cat("mSARIMA full MAE: ", round(mean(mae_msarima_full), 3), "\n")
+cat("mSARIMA full RMSE:", round(mean(rmse_msarima_full), 3), "\n")
+
+# mSARIMA 95% PI coverage & width
+msarima_pi <- coverage_width(actual_matrix_full[1:forecast_origins,], fc_msarima_full_lower, fc_msarima_full_upper)
+cat("mSARIMA 95% coverage:", round(msarima_pi$coverage_overall, 3), " (target 0.95)\n")
+cat("mSARIMA 95% width:   ", round(msarima_pi$width_overall, 2), "\n")
+
+### MAE RMSE
+plot(mae_msarima_full, ylim=c(20, 150))
+plot(rmse_msarima_full, ylim=c(20, 190))
+
+### Coverage
+plot(msarima_pi$coverage_by_h, ylim=c(0,1))
+abline(h=0.95, col="red")
+
+### Width
+plot(msarima_pi$width_by_h)
+
+
+### Just some actual forecasts
+plot(fc_msarima_full[1,], ylim=c(100, 1800), type="l")
+lines(fc_msarima_full_lower[1,])
+lines(fc_msarima_full_upper[1,])
+lines(actual_matrix_full[1,], col="red")
+
+plot(fc_msarima_full[40,], ylim=c(100, 1800), type="l")
+lines(fc_msarima_full_lower[40,])
+lines(fc_msarima_full_upper[40,])
+lines(actual_matrix_full[40,], col="red")
+
+#list.files()
+#load("fc_msarima_full5.RData")
+```
+
+## SARIMA
+
+```{r}
+
+
+pdf(
+  file = "msarima_forecast_evaluation.pdf",
+  width = 10,
+  height = 8
+)
+
+par(
+  mfrow = c(2, 2),
+  mar = c(4.5, 4.5, 3.5, 1.5),
+  oma = c(0, 0, 1, 0)
+)
+
+# 1. MAE
+plot(
+  mae_msarima_full,
+  type = "l",
+  lwd = 2,
+  ylim = c(20, 150),
+  xlab = "Forecast horizon",
+  ylab = "MAE",
+  main = "Mean Absolute Error by Horizon"
+)
+
+# 2. RMSE
+plot(
+  rmse_msarima_full,
+  type = "l",
+  lwd = 2,
+  ylim = c(20, 190),
+  xlab = "Forecast horizon",
+  ylab = "RMSE",
+  main = "Root Mean Squared Error by Horizon"
+)
+
+# 3. Prediction-interval coverage
+plot(
+  msarima_pi$coverage_by_h,
+  type = "l",
+  lwd = 2,
+  ylim = c(0, 1),
+  xlab = "Forecast horizon",
+  ylab = "Empirical coverage",
+  main = "95% Prediction-Interval Coverage"
+)
+
+abline(
+  h = 0.95,
+  col = "red",
+  lty = 2,
+  lwd = 2
+)
+
+legend(
+  "bottomright",
+  legend = "Nominal coverage = 0.95",
+  col = "red",
+  lty = 2,
+  lwd = 2,
+  bty = "n",
+  cex = 0.8
+)
+
+# 4. Prediction-interval width
+plot(
+  msarima_pi$width_by_h,
+  type = "l",
+  lwd = 2,
+  xlab = "Forecast horizon",
+  ylab = "Mean interval width",
+  main = "Mean 95% Prediction-Interval Width"
+)
+
+mtext(
+  "mSARIMA Forecast Evaluation",
+  outer = TRUE,
+  side = 3,
+  line = -0.5,
+  font = 2,
+  cex = 1.2
+)
+
+dev.off()
+
+
+```

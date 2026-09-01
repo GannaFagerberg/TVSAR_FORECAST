@@ -132,18 +132,26 @@ include("TVSARUtils.jl")
 
 include("ForecastFunction.jl")
 export true_f,
-       PredLocalMultiSAR_SV_gr
+       PredLocalMultiSAR_SV_gr,
+       PredLocalMultiSMA_gr
 
 include("PlottingFunctions.jl")
 export summarize_and_plot_t,
        hdi,
        transform_theta,
        plot_state,
-       summarize_and_plot
+       summarize_and_plot,
+       plot_years, overlay_years
 
 
 include("FisherFunctions.jl")
 export  FisherInfo_full_global_gaussian,  FisherInfo_full_local_gaussian, FisherInfo_full_initial_gaussian
 export  prior_t0_gaussian
        
+include("SVDSP_update.jl")
+export UpdateErrorVolatility_DSP,
+       Update_h_with_h0,
+       UpdateH_sv,
+       update_dsp_sv_h,
+       Updateξ_sv
 end # module TVSAR_FORECAST

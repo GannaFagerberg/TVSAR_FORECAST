@@ -8,6 +8,24 @@ using Plots
 using Dates
 using LaTeXStrings
 
+# ==========================================================
+# SAVE PLOTS
+# ==========================================================
+
+save_label =false
+
+save_dir = raw"C:\Users\Anna Fagerberg\JuliaPackages\TVSAR_FORECAST\real_data\vehicle"
+
+if save_label
+    mkpath(save_dir)
+end
+
+function maybe_save_plot(filename)
+    if save_label
+        savefig(joinpath(save_dir, filename))
+    end
+end
+
 
 default(
     background_color = :white,
@@ -23,8 +41,9 @@ T_group = size(SAR_res[1], 1)
 nPerGroup_fit = modelSettings.nPerGroup   # = 720
 
 # Data actually entering the model
-#timestamp_model = timestamp_train[169:end]
+#timestamp_model = timestamp_train
 timestamp_model = timestamp_train
+
 
 # Put each posterior state at midpoint of its 30-day estimation block
 idx_group = [
@@ -33,16 +52,22 @@ idx_group = [
 ]
 
 time_ind = timestamp_train[idx_group]
-years = unique(year.(time_ind))
 
-xticks_custom = (
-    [
-        time_ind[findfirst(==(yr), year.(time_ind))]
-        for yr in years
-    ],
-    string.(years)
+# ============================================================
+# Cleaner date ticks for long monthly series
+# ============================================================
+
+first_year = year(first(time_ind))
+last_year  = year(last(time_ind))
+
+tick_years = collect(
+    ceil(Int, first_year / 5) * 5 : 5 : last_year
 )
 
+xticks_custom = (
+    Date.(tick_years, 1, 1),
+    string.(tick_years)
+)
 
 #############
 nPerGroup=1
@@ -56,12 +81,14 @@ if INTERCEPT
             nPerGroup,
             T
         );
-        ylim = (-0.1, 0.1),
+        ylim = (-0.5, 1.5),
         prefix = "Intercept",
         #true_phi = true_intercept,
         xindex = time_ind,
         xticks = xticks_custom
     )
+
+    maybe_save_plot("intercept_sma.pdf")
 end
 
 # ==========================================================
@@ -96,6 +123,8 @@ if model_type == :SAR
             xindex = time_ind,
         xticks = xticks_custom
         )
+
+        maybe_save_plot("phi_$(j).pdf")
     end
 
     # Seasonal AR coefficients
@@ -121,12 +150,14 @@ if model_type == :SAR
                     nPerGroup,
                     T
                 );
-                ylim = (-1, 1),
+                ylim = (-2, 2),
                 prefix = latexstring("\\Phi_{$j,t}^{($s)}"),
                 #true_phi = Phi,
                 xindex = time_ind,
                 xticks = xticks_custom
             )
+
+                maybe_save_plot("Phi_$(j)_s$(s).pdf")
         end
 
         seasonal_startcol += p_seas
@@ -155,10 +186,11 @@ elseif model_type == :SMA
                 nPerGroup,
                 T
             );
-            ylim = (-1, 1),
+            ylim = (-2, 2),
             prefix = latexstring("\\psi_{$j,t}"),
             #true_phi = phi
         )
+            maybe_save_plot("phi_$(j)_sma.pdf")
     end
 
     # Seasonal MA coefficients
@@ -184,10 +216,12 @@ elseif model_type == :SMA
                     nPerGroup,
                     T
                 );
-                ylim = (-1, 1),
+                ylim = (-2, 2),
                 prefix = latexstring("\\Psi_{$j,t}^{($s)}"),
                 #true_phi = Phi
             )
+
+               maybe_save_plot("Phi_$(j)_s$(s)_sma.pdf")
         end
 
         seasonal_startcol += p_seas
@@ -225,7 +259,7 @@ elseif model_type == :SARMA
                 nPerGroup,
                 T
             );
-            ylim = (-1, 1),
+            ylim = (-2, 2),
             prefix = latexstring("\\phi_{$j,t}")
             #true_phi = phi_AR
         )
@@ -258,7 +292,7 @@ elseif model_type == :SARMA
                     nPerGroup,
                     T
                 );
-                ylim = (-1, 1),
+                ylim = (-2, 2),
                 prefix = latexstring("\\Phi_{$j,t}^{($s)}")
                 #true_phi = Phi_AR
             )
@@ -297,7 +331,7 @@ elseif model_type == :SARMA
                 nPerGroup,
                 T
             );
-            ylim = (-1, 1),
+            ylim = (-2, 2),
             prefix = latexstring("\\psi_{$j,t}")
             #true_phi = psi
         )
@@ -330,7 +364,7 @@ elseif model_type == :SARMA
                     nPerGroup,
                     T
                 );
-                ylim = (-1, 1),
+                ylim = (-2, 2),
                 prefix = latexstring("\\Psi_{$j,t}^{($s)}")
                 #true_phi = Psi
             )
@@ -359,7 +393,7 @@ if obs_var_type in (:SV, :SVDSP)
 
     summarize_and_plot_t(
         sd_meas .* sd ./ sqrt(nPerGroup);
-        ylim = (0, 7.0),
+        ylim = (0, 0.1),
         prefix = L"\sigma_{e,t}",
         #true_phi = true_sd
         #xindex = time_group,

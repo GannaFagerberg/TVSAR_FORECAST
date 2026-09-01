@@ -1489,9 +1489,9 @@ function GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSett
         if obs_var_type in (:SV, :SVDSP)
 
             if nPerGroup > 1
-                σₑpost[:, thin_idx] .= σₑ
+                σₑpost[:, thin_idx] .=σₑ_g
             else
-                σₑpost[:, thin_idx] .= σₑ_g
+                σₑpost[:, thin_idx] .= σₑ
             end
 
         else

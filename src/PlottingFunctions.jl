@@ -177,13 +177,14 @@ function summarize_and_plot(
         plt = plot(
             1:T,
             median_vals,
-            label = L"\text{median}",
+            #label = L"\text{median}",
             color = col_median,
             lw = 2,
             ylim = ylim,
             xlim = xlim,
             title = prefix,
-            titlefont = font(18)
+            titlefont = font(18),
+              legend = false
         )
 
         plot!(1:T, lower_bound, label="", color=col_band, lw=1.5)
@@ -193,13 +194,61 @@ function summarize_and_plot(
             plot!(
                 1:T,
                 true_phi[:, j],
-                label = L"\text{true }\phi",
+                #label = L"\text{true }\phi",
                 color = col_true,
                 lw = 2,
                 linestyle = :dot
             )
         end
-
-        display(plt)
+        return plt
+        #display(plt)
     end
 end
+
+
+###
+### Compare two years
+function plot_years(df, start_year, end_year)
+    idx = (year.(df.DATE) .>= start_year) .&
+          (year.(df.DATE) .<= end_year)
+
+    plot(
+        df.DATE[idx],
+        df.energy[idx],
+        xlabel = "Date",
+        ylabel = "Energy",
+        label = false
+    )
+end
+
+### Compare years
+function overlay_years(df, years)
+
+    p = plot(
+        xlabel = "Date",
+        ylabel = "Energy",
+        legend = :topright
+    )
+
+    for yr in years
+        idx = year.(df.DATE) .== yr
+
+        dates_yr = df.DATE[idx]
+        y_yr     = df.energy[idx]
+
+        # Map all years onto the same calendar year
+        common_dates = Date.(2000, month.(dates_yr), day.(dates_yr))
+
+        plot!(
+            p,
+            common_dates,
+            y_yr,
+            label = string(yr),
+            lw = 1.5
+        )
+    end
+
+    return p
+end
+
+

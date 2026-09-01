@@ -6,7 +6,8 @@ using PDMats
 using LinearAlgebra
 using Random
 using BandedMatrices
-
+using Plots
+using Statistics
 
 #using Pkg
 #Pkg.activate(raw"C:\Users\Anna Fagerberg\JuliaPackages\TVSAR_FORECAST.jl")
@@ -29,10 +30,11 @@ using BandedMatrices
 # Data
 ############################################################
 
-x = x_detrend
+#x = x_detrend
+x = x_data[8:end]
 T = length(x)
 # plot(x)
-# T / (30 * 24)
+# T /(30)
 #120*30 * 24
 #
 ############################################################
@@ -40,18 +42,19 @@ T = length(x)
 ############################################################
 
 #model_type = :SMA
-#model_type  = :SAR
-model_type = :SARMA
+model_type  = :SAR
+#model_type = :SARMA
 
 SAR_conditional = model_type == :SAR ? false : false
 
 # Variance specification
-obs_var_type   = :static     # :SV, :SVDSP, :static
+obs_var_type   = :static   # :SV, :SVDSP, :static
 state_var_type = :DSP       # :DSP, :static
 
 INTERCEPT = true
-nPerGroup = 24*30
+#nPerGroup = 24*30
 #nPerGroup = 1
+nPerGroup  = 30
 #T/nPerGroup
 
 use_fourier = false # have nor embedded here yet
@@ -90,8 +93,8 @@ elseif model_type == :SARMA
 
 elseif model_type == :SAR
 
-    season = s1 = s2 = [1, 24, 24*7]
-    p      = p1 = p2 = [2, 1, 1]
+    season = s1 = s2 = [1, 7, 365]
+    p      = p1 = p2 = [2, 2, 1]
     pFit   = sum(p1)
 
 else
@@ -320,8 +323,8 @@ else
 end
 
 ### Settings
-nBurn = 1000
-nIter = 1000
+nBurn = 10000
+nIter = 3000
 
 ###############
 # FILTER TYPE

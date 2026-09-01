@@ -200,13 +200,12 @@ function update_dsp!(ν, S, H, H̃, ξ, ϕ, μ, σ²ₙ, ϕ₀, κ₀, m₀, σ�
     # mixture allocation
     S[:,k] = UpdateMixAlloc(Ỹ[:,k], H̃[:,k] .+ μ[k], mixLogχ²₁)
 
-    H[:,k] = Update_h(Ỹ[:,k], m[S[:,k]], v[S[:,k]],
-                      Dᵩ, ξ[:,k], ϕ[k], σ²ₙ[k], μ[k])
+    H[:,k] = Update_h(Ỹ[:,k], m[S[:,k]], v[S[:,k]],Dᵩ, ξ[:,k], ϕ[k], σ²ₙ[k], μ[k])
 
     # ---- choose δ ----
     #δ = (INTERCEPT && k == 1) ? 0.01 : 0.01
 
-    ξ[:,k] = Updateξ1(H[:,k], ϕ[k], σ²ₙ[k], μ[k], α, β; δ= 0.0001 )
+    ξ[:,k] = Updateξ1(H[:,k], ϕ[k], σ²ₙ[k], μ[k], α, β; δ= 0.0001)
     #ξ[:,k] = Updateξ(H[:,k], ϕ[k], σ²ₙ[k], μ[k], α, β)
 
     ϕ[k] = Updateϕ(H[:,k], ξ[:,k], μ[k], σ²ₙ[k], ϕ₀, κ₀)
@@ -829,3 +828,4 @@ function expand_sigma_grouped!(
     return σ_full
 end
 
+### Update SVDSP

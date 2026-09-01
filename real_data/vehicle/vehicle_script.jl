@@ -1,0 +1,656 @@
+############################################################
+# Model Type and Configuration
+############################################################
+using Revise
+using PDMats
+using LinearAlgebra
+using Random
+using BandedMatrices
+
+
+#using Pkg
+#Pkg.activate(raw"C:\Users\Anna Fagerberg\JuliaPackages\TVSAR_FORECAST.jl")
+#using TVSAR_FORECAST 
+
+# ----------------------------------------------------------
+# Deterministic Fourier terms
+# ----------------------------------------------------------
+
+# deterministic_fourier = false
+
+# if deterministic_fourier
+#     x_all = x_data - s_year
+# else
+#     x_all = x_data
+# end
+
+using HTTP, CSV, DataFrames, Dates
+#👉 https://fred.stlouisfed.org/series/TRFVOLUSM227NFWA
+url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=TRFVOLUSM227NFWA"
+df = CSV.read(IOBuffer(HTTP.get(url).body), DataFrame)
+
+rename!(df, [:DATE, :passengers])
+
+df.DATE = Date.(df.DATE)
+
+# ============================================================
+# Initial training period: through June 2016
+# ============================================================
+
+df_train = df[
+    df.DATE .<= Date(2016, 6, 1),
+    :
+]
+y_train =Float64.(df_train.passengers)
+time_train =df_train.DATE
+timestamp_train = df_train.DATE
+
+@show nrow(df_train)
+@show first(df_train.DATE)
+@show last(df_train.DATE)
+
+#plot(y)
+logy= log.(y_train)
+#plot(logy[600:610])
+#T_thr = 605
+
+#sd     = maximum(logy[1:675-36])
+sd     = 1
+#sd = std(logy[1:675-36])
+train_mean = median(logy[1:30])
+x = (logy .-train_mean)./sd
+
+#y_test = logy[675-36+1:end]
+#x_data = x_data[1:675-36]
+plot(x)
+
+############
+## y_test ##
+############
+
+df_train = df[
+    df.DATE .<= Date(2016, 6, 1),
+    :
+]
+
+df_test = df[
+    (df.DATE .>= Date(2016, 7, 1)) .&
+    (df.DATE .<= Date(2019, 6, 1)),
+    :
+]
+
+# Training data
+y_train = Float64.(df_train.passengers)
+time_train = df_train.DATE
+timestamp_train = df_train.DATE
+
+# Test data: July 2016 -- June 2019
+y_test = Float64.(df_test.passengers)
+time_test = df_test.DATE
+timestamp_test = df_test.DATE
+
+@show nrow(df_train)
+@show first(df_train.DATE)
+@show last(df_train.DATE)
+
+@show nrow(df_test)          # should be 36
+@show first(df_test.DATE)    # 2016-07-01
+@show last(df_test.DATE)     # 2019-06-01
+
+# ------------------------------------------------------------
+# Transformation
+# ------------------------------------------------------------
+
+logy = log.(y_train)
+logy_test = log.(y_test)
+
+sd = 1
+
+train_mean = median(logy[1:30])
+
+x = (logy .- train_mean) ./ sd
+y_test = (logy_test .- train_mean) ./ sd
+
+
+############################################################
+# Data
+############################################################
+
+
+T = length(x)
+# plot(x)
+# T / (30 * 24)
+#120*30 * 24
+#
+############################################################
+# Model Specification
+############################################################
+
+#model_type = :SMA
+#model_type  = :SAR
+model_type = :SARMA
+
+SAR_conditional = model_type == :SAR ? false : false
+
+# Variance specification
+obs_var_type   = :SVDSP    # :SV, :SVDSP, :static
+state_var_type = :DSP       # :DSP, :static
+
+INTERCEPT = true
+nPerGroup = 1
+#nPerGroup = 1
+#T/nPerGroup
+
+use_fourier = false # have nor embedded here yet
+scaled      = false
+
+fisher_informed_prior_to = false
+
+############################################################
+# Intercept Dynamics and Starting column
+############################################################
+
+if INTERCEPT
+    intercept_dynamics = :rw   # :ll also possible, but here RW is used as usual
+else
+    intercept_dynamics = nothing
+end
+
+startcol = INTERCEPT ? (intercept_dynamics == :ll ? 3 : 2) : 1
+
+############################################################
+#  Model specification, etc
+############################################################
+
+if model_type == :SMA
+
+    season = s1 = s2 = [1, 12]
+    p      = p1 = p2 = [1, 3]
+    pFit   = sum(p2)
+
+elseif model_type == :SARMA
+
+    s1 = [1, 12]
+    s2 = [1]
+    p1 = [1, 2]
+    p2 = [1]
+    pFit = sum(p1) + sum(p2)
+
+elseif model_type == :SAR
+
+    season = s1 = s2 = [1, 12]
+    p      = p1 = p2 = [1, 2]
+    pFit   = sum(p1)
+
+else
+    error("model_type must be :SAR, :SMA, or :SARMA")
+end
+
+# Total number of params
+nLags = pFit + (INTERCEPT ? (intercept_dynamics == :ll ? 2 : 1) : 0)
+
+# Total number of lags in all AR and MA polynomials
+p_max = [
+    sum(p1 .* s1),
+    sum(p2 .* s2)
+]
+
+############################################################
+# Prior Parameters
+############################################################
+
+if model_type in (:SARMA, :SMA)
+
+    fitted_model = Arima(
+        x,
+        order    = [5, 2, 5],
+        seasonal = [5, 1, 5]
+    )
+
+    residuals      = fitted_model[:residuals]
+    resid_variance = fitted_model[:sigma2]
+
+    fitted_model = Arima(
+        x[1:100],
+        order = [2, 2, 5],
+        seasonal = [5, 1, 5],
+        include_mean = false,
+        include_drift = true,
+        include_constant = false
+    )
+
+    resid_variance = fitted_model[:sigma2]
+    σ0 = sqrt(resid_variance)
+
+elseif model_type == :SAR
+
+    fitted_model = Arima(
+        x[1:200],
+        order = [2, 2, 5],
+        seasonal = [5, 2, 5],
+        include_mean = false,
+        include_drift = false,
+        include_constant = true
+    )
+
+    resid_variance = fitted_model[:sigma2]
+    σ0 = sqrt(resid_variance)
+
+
+else
+
+    error("model_type must be :SAR, :SMA, or :SARMA")
+
+end
+
+############################################################
+# Hyperparameters and Regressor Setup
+############################################################
+
+
+# ============================================================
+# Construct regressors by model type
+# ============================================================
+
+if model_type == :SARMA
+
+    # MA regressors
+    init_errors = vcat(
+        fill(0.0, p_max[2]),
+        residuals
+    )
+
+    _, Z_ma, T = SetupARReg(
+        init_errors[:, 1],
+        p_max[2]
+    )
+
+    # AR regressors
+    init_y = fill(mean(x[1:50]), p_max[1])
+    obs    = vcat(init_y, x)
+
+    Y, Z_ar, T = SetupARReg(
+        obs,
+        p_max[1]
+    )
+
+    # Active lags
+    activeLags_ar = FindActiveLagsMultiSAR(p1, s1)
+    activeLags_ma = FindActiveLagsMultiSAR(p2, s2)
+
+    Z_ar = Z_ar[:, activeLags_ar]
+    Z_ma = Z_ma[:, activeLags_ma]
+
+    # Combined design
+    Z = hcat(Z_ar, Z_ma)
+
+
+elseif model_type == :SMA
+
+    Y = x
+
+    # Initialize MA errors
+    init_errors = vcat(
+        fill(median(Y), p_max[2]),
+        residuals
+    )
+
+    # Active MA lags and regressors
+    activeLags_ma = FindActiveLagsMultiSAR(p2, s2)
+
+    _, Z, T = SetupARReg_active(
+        init_errors[:, 1],
+        activeLags_ma
+    )
+
+    activeLags_ar = activeLags_ma
+    errors_reg    = init_errors
+
+
+elseif model_type == :SAR
+
+    # Initialize observations / presample values
+    if SAR_conditional
+
+        obs = vcat(
+            x[1:25],
+            x[26:end]
+        )
+
+    else
+
+        init_y = fill(mean(x[1:50]), p_max[1])
+        obs    = vcat(init_y, x)
+
+    end
+
+    # Active AR lags
+    activeLags_ar = FindActiveLagsMultiSAR(p1, s1)
+    activeLags_ma = activeLags_ar
+
+    # Construct regressors
+    Y, Z, T = SetupARReg_active(
+        obs,
+        activeLags_ar
+    )
+
+    # Optional Fourier-adjusted regressors
+    if use_fourier
+
+        init_f = fill(
+            mean(x[1:50]) - s_year[1],
+            p_max[1]
+        )
+
+        obs_f = vcat(
+            init_y,
+            x_data - s_year
+        )
+
+        _, Z, _ = SetupARReg_active(
+            obs_f,
+            activeLags_ar
+        )
+    end
+
+
+else
+
+    error("model_type must be :SAR, :SMA, or :SARMA")
+
+end
+
+
+# ============================================================
+# Posterior shape parameters
+# ============================================================
+
+
+alpha_sigma = 0.001
+beta_sigma  = 0.001
+
+if model_type == :SAR
+    alpha_sigma_hat = alpha_sigma + T / 2
+    alpha_sigma_hat_state = alpha_sigma + (T / nPerGroup - 1) / 2
+else
+    alpha_sigma_hat = alpha_sigma + T / 2
+end
+
+
+############################################################
+# Grouping
+############################################################
+# Number of observations per group
+
+# Needed for inference of the initial presample y-values
+#group_map = build_group_map(p_max[1],nPerGroup)
+
+# Grouped Observations and Regressors
+y_g = group_vector(Y,nPerGroup)
+
+Cargs   = [Z[t,:] for t in 1:T]
+Cargs_g =  group_vector_view(Cargs, nPerGroup)
+
+cache_ar = build_sarma_cache(p1, s1, activeLags_ar)   # single cache
+cache_ma = build_sarma_cache(p2, s2, activeLags_ma)   # single cache (if needed)
+      
+relu = true
+    if relu == true
+    ztrans = "partials"
+    clipped_partials = true
+    p_threshold      = 0.99 #OBS! 0.99 seems better than 0.9999
+else
+    ztrans = "monahan" 
+    clipped_partials = false
+    p_threshold      = 1000.0
+    #ztrans = "linear" 
+    #ztrans  = "sigmoid" 
+end
+
+### Settings
+nBurn = 10000
+nIter = 3000
+
+###############
+# FILTER TYPE
+###############
+iterated  = false
+if iterated 
+    num_iters = 5
+else
+    num_iters = 1
+end
+
+filtering_methods = ("iekf", "iekfl", "iukf", "iukfl", "iplf", "diplf")
+kf_method         = filtering_methods[1]
+
+# Variance components
+var_mat = fill(0.3^2, nLags)   # MA coeffs unchanged
+
+if INTERCEPT
+    var_mat[1] = 1.0^2     # level c₀ (weak prior)
+    #var_mat[1] = 5^2 
+    if intercept_dynamics ==:ll
+        var_mat[2] = 0.005^2       # slope d₀ (STRONG shrinkage)
+    end
+end
+
+Σ₀ = PDMat(Diagonal(var_mat))
+μ₀ = zeros(nLags)
+
+if INTERCEPT && model_type == :SMA
+    μ₀[1] = mean(Y[1:100])
+end
+
+# ============================================================
+# Fisher-based prior at t = 0
+# ============================================================
+
+if fisher_informed_prior_to
+    
+    n_init = T
+
+    priorparam_μ = mean(Y[1:n_init])
+    n₀ = nPerGroup
+
+    Z_init = @view Z[1:n_init, :]
+
+    μ₀, Σ₀ = prior_t0_gaussian(
+        priorparam_μ,
+        n₀,
+        nLags,
+        Z_init,
+        σ0^2,
+        cache_ar;
+        INTERCEPT = INTERCEPT,
+        startcol = startcol,
+        ztrans = ztrans,
+        negative_signs = true,
+        FisherInfo_initial = FisherInfo_full_initial_gaussian
+    )
+end
+
+priorSettings = (
+  
+            ϕ₀ = 0.5,                 # Prior mean for ϕ
+            κ₀ = 0.3,                 # Prior std for ϕ ~ N(ϕ₀, κ₀²)
+
+            m₀ = -15.0 + log(nPerGroup),                 # Prior mean for μ
+            σ₀ = 3.0,                 # Prior std for μ ~ N(m₀, σ₀²)
+
+            ν₀ = 3.0,                # Prior df for σ²ₙ
+            ψ₀ = 1.0,                # Prior scale for σ²ₙ
+
+            μ₀ = μ₀,                 # Prior mean for initial state
+            Σ₀ = Σ₀,                 # Prior covariance for initial state
+
+            # --------------------------------------------------
+            # Observation noise
+            # --------------------------------------------------
+            σₑ  = fill(σ0, T),
+
+            alpha_sigma     = alpha_sigma,
+            beta_sigma      = beta_sigma,
+            alpha_sigma_hat = alpha_sigma_hat,
+
+            # --------------------------------------------------
+            # UKF / IEKF parameters
+            # --------------------------------------------------
+            α_ukf = 1e-3,
+            β_ukf = 2.0,
+            κ_ukf = 0,
+
+            x_mean = nothing,
+        )
+
+        
+modelSettings = (
+            
+            # --------------------------------------------------
+            # Structure
+            # --------------------------------------------------
+            
+            nPerGroup  = nPerGroup,
+
+            s1 = s1,
+            p1 = p1,
+            s2 = s2,
+            p2 = p2,
+
+            p_max = p_max,
+            nLags = nLags,
+
+            iterations = num_iters,
+            
+            # --------------------------------------------------
+            # Measurement equation
+            # --------------------------------------------------
+        
+            #C  = C_fun3,
+            #∂C = derivC_fun3,
+
+            Cargs = Cargs_g,
+            Z     = Z,
+
+            activeLags_ma=activeLags_ma,
+            activeLags_ar=activeLags_ar,
+
+            cache_ma = cache_ma,
+            cache_ar = cache_ar,
+
+            ztrans=ztrans,
+
+            # --------------------------------------------------
+            # DSP / mixture settings
+            # --------------------------------------------------
+            updateσₙ = false,
+            nMixComp = 10,
+
+            α = 0.5,
+            β = 0.5,
+
+            # --------------------------------------------------
+            # Stochastic volatility (SV / DSP)
+            # --------------------------------------------------
+            ϕ̄₀ = 0.5,
+            κ̄₀ = 0.3,
+
+            m̄₀ = -15,
+            σ̄₀ = 3,
+
+            ν̄₀ = 3,
+            ψ̄₀ = 1.0,
+
+            ϕ̄  = 0.5,
+            μ̄  = -15.0,
+            σ̄²ₙ = 1.0,
+
+            # --------------------------------------------------
+            # Indexing
+            # --------------------------------------------------
+            intercept_dynamics=intercept_dynamics,
+
+            # --------------------------------------------------
+            # MA presample window
+            # --------------------------------------------------
+            T_use = 2*p_max[2],
+            #T_use = p_max[2]+1,
+            #use_fourier = true
+        )
+
+
+        
+        algoSettings = (
+            # --------------------------------------------------
+            # MCMC control
+            # --------------------------------------------------
+            nBurn = nBurn,
+            nIter = nIter + nBurn,
+
+            # --------------------------------------------------
+            # Model switches
+            # --------------------------------------------------
+            INTERCEPT = INTERCEPT,
+
+            resid_label = iterated,
+            method_label = Symbol(kf_method),
+
+            model_type = model_type,
+            
+            SAR_conditional = SAR_conditional,
+
+            obs_var_type   = obs_var_type ,     # :SV, :SVDSP, :static
+            state_var_type = state_var_type ,    # :DSP, :static
+
+            ma_regressor_type = :median_freeze, #:current # :current
+            
+            clipped_partials = clipped_partials,
+            p_threshold      = p_threshold,
+
+            presample_AR = :posterior, # :posterior :recursive
+            presample_MA = :posterior ,    # :posterior :simple
+            
+            scaling      =:none,            # Scaling of state innov, can be :full, :diagonal or :none
+            FisherInfo   = nothing,    # Scaling for the state
+            normalization = true,
+            fixed_scaling = true,
+            nCalibScale   = nothing,
+            freeze_iter   = 1000
+            )
+        
+nCalibScale = 1000
+#scaling      = :none
+
+#scaling   = :none
+scaling   = :none
+#scaling    = :diag
+#scaling   = :fulllocal
+#scaling   = :diaglocal
+
+FisherInfo = get(
+    Dict(
+        :none        => nothing,
+        :full        => FisherInfo_full_global_gaussian,
+        :fulllocal   => FisherInfo_full_local_gaussian,
+        :diag        => FisherInfo_full_global_gaussian,
+        :diaglocal   => FisherInfo_full_local_gaussian,
+    ),
+    scaling,
+) do
+    error("Unknown scaling method: $scaling")
+end
+
+#scatter(sun, y)
+algoSettings = (;algoSettings...,scaling = scaling,FisherInfo = FisherInfo,nCalibScale=nCalibScale);
+#dataSettings = (y=y, X=X, covSel=covSel, nPerGroup=nPerGroup, p_threshold=p_threshold, nreg=nreg);
+
+### CHANGE THE CODES SO THAT I SWITCH BETWEEN MA AND AR in CACHE
+
+t_st = time()
+Random.seed!(1)
+elapsed = @elapsed begin
+SAR_res = GibbsSamplerTVSARMA_full(y_g, Y, priorSettings, modelSettings, algoSettings)
+#SAR44_res = GibbsSamplerTVSARMA_full_fourier(y_g, Y, priorSettings, modelSettings, algoSettings)
+#SAR44_res = GibbsSamplerTVSARMA_block(y_g, Y, priorSettings, modelSettings, algoSettings)
+end
+println("Elapsed: ", elapsed / 60, " mins")

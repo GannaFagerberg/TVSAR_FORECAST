@@ -188,11 +188,11 @@ p_season_weeks = plot(
     ylabel = "Average electricity demand",
     legend = :topright,
     legendfontsize = 8,
-    size = (1200, 500)
+    size = (1200, 500),
+    left_margin = 8Plots.mm
 )
 
-x =
-    collect(0:(H - 1))
+x =collect(0:(H - 1))
 
 
 for s in season_specs
